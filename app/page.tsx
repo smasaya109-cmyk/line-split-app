@@ -11,7 +11,6 @@ import {
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 
-// 型
 type Group = {
   id: string;
   name: string;
@@ -29,34 +28,40 @@ type Expense = {
   currency: string;
   paidBy: string;
   participants: string[];
+  createdAt?: any;
+};
+
+type SettlementLine = {
+  from: string;
+  to: string;
+  amount: number;
+  currency: string;
 };
 
 export default function Page() {
-  // UIタブ
+  // UIタブ --------------------------------
   const [activeTab, setActiveTab] = useState<
-    "groups" | "members" | "add" | "list"
+    "groups" | "members" | "add" | "list" | "settle"
   >("groups");
 
-  // グループ関連
+  // データ系 --------------------------------
   const [groups, setGroups] = useState<Group[]>([]);
   const [groupName, setGroupName] = useState("");
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
 
-  // メンバー
   const [members, setMembers] = useState<Member[]>([]);
   const [memberName, setMemberName] = useState("");
 
-  // 支払い
+  const [expenses, setExpenses] = useState<Expense[]>([]);
+
+  // 入力中の支払い -------------------------
   const [title, setTitle] = useState("");
   const [amount, setAmount] = useState<number>(0);
   const [currency, setCurrency] = useState<"JPY" | "USD">("JPY");
   const [paidBy, setPaidBy] = useState<string>("");
   const [selectedParticipants, setSelectedParticipants] = useState<string[]>([]);
 
-  // 一覧
-  const [expenses, setExpenses] = useState<Expense[]>([]);
-
-  // LIFFをCDNから読む（Vercelで落ちないやつ）
+  // LIFFをCDNから読む（Vercelで落ちない） ----------------
   useEffect(() => {
     if (typeof window === "undefined") return;
     if ((window as any).liff) {
@@ -83,11 +88,11 @@ export default function Page() {
       const profile = await liff.getProfile();
       setMemberName(profile.displayName || "");
     } catch (e) {
-      console.warn("LIFF init error", e);
+      console.warn("liff init error", e);
     }
   };
 
-  // グループ一覧
+  // グループ取得 ---------------------------
   useEffect(() => {
     const q = query(collection(db, "groups"), orderBy("createdAt", "desc"));
     const unsub = onSnapshot(q, (snap) => {
@@ -101,7 +106,7 @@ export default function Page() {
     return () => unsub();
   }, [selectedGroupId]);
 
-  // メンバー一覧
+  // メンバー取得 ---------------------------
   useEffect(() => {
     if (!selectedGroupId) return;
     const q = query(
@@ -112,6 +117,8 @@ export default function Page() {
       const list: Member[] = [];
       snap.forEach((d) => list.push({ id: d.id, name: d.data().name }));
       setMembers(list);
+
+      // 初期選択
       if (list.length > 0 && !paidBy) setPaidBy(list[0].id);
       if (list.length > 0 && selectedParticipants.length === 0) {
         setSelectedParticipants(list.map((m) => m.id));
@@ -121,7 +128,7 @@ export default function Page() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedGroupId]);
 
-  // 支払い一覧
+  // 支払い取得 -----------------------------
   useEffect(() => {
     if (!selectedGroupId) return;
     const q = query(
@@ -139,6 +146,7 @@ export default function Page() {
           currency: data.currency,
           paidBy: data.paidBy,
           participants: data.participants || [],
+          createdAt: data.createdAt,
         });
       });
       setExpenses(list);
@@ -146,7 +154,7 @@ export default function Page() {
     return () => unsub();
   }, [selectedGroupId]);
 
-  // ---- アクション ----
+  // ---------- Actions ----------
   const handleAddGroup = async () => {
     if (!groupName.trim()) return;
     await addDoc(collection(db, "groups"), {
@@ -157,7 +165,8 @@ export default function Page() {
   };
 
   const handleAddMember = async () => {
-    if (!selectedGroupId || !memberName.trim()) return;
+    if (!selectedGroupId) return;
+    if (!memberName.trim()) return;
     await addDoc(collection(db, "groups", selectedGroupId, "members"), {
       name: memberName.trim(),
       joinedAt: serverTimestamp(),
@@ -196,11 +205,43 @@ export default function Page() {
     return f ? f.name : "(不明)";
   };
 
-  // ---- ここからUI ----
+  // ---------- 集計（精算） ----------
+  const settlementsByCurrency = calcSettlements(members, expenses);
+
+  // ---------- LINEで招待 ----------
+  const handleInviteByLine = async () => {
+    if (typeof window === "undefined") return;
+    const liff = (window as any).liff;
+    if (!liff) {
+      alert("LIFFが読み込まれていません");
+      return;
+    }
+    if (!liff.isLoggedIn()) {
+      liff.login();
+      return;
+    }
+
+    // このミニアプリのURLを送る
+    const shareUrl = window.location.href;
+    try {
+      await liff.shareTargetPicker([
+        {
+          type: "text",
+          text: `割り勘アプリに入って！\n${shareUrl}`,
+        },
+      ]);
+    } catch (e) {
+      console.warn(e);
+      alert("LINEでの招待に失敗しました");
+    }
+  };
+
+  // ========== UI ==========
+
   return (
     <div className="min-h-screen bg-[#ECEEF0] flex justify-center">
       <div className="relative w-full max-w-md bg-white min-h-screen flex flex-col">
-        {/* 上部ヘッダー */}
+        {/* ヘッダー */}
         <div className="h-14 flex items-center justify-between px-4 border-b">
           <div>
             <p className="text-sm font-semibold">割り勘だよ</p>
@@ -215,22 +256,21 @@ export default function Page() {
           </div>
         </div>
 
-        {/* コンテンツ */}
+        {/* 中身 */}
         <div className="flex-1 overflow-y-auto pb-20 px-4 pt-4 bg-[#F5F7F8]">
-          {/* タブごとの中身 */}
           {activeTab === "groups" && (
             <div className="space-y-4">
               <p className="text-xs text-gray-500">グループを追加</p>
               <div className="flex gap-2">
                 <input
-                    value={groupName}
-                    onChange={(e) => setGroupName(e.target.value)}
-                    placeholder="例）11/3 大阪飲み会"
-                    className="flex-1 rounded-lg border border-gray-200 px-3 py-2 text-sm bg-white"
+                  value={groupName}
+                  onChange={(e) => setGroupName(e.target.value)}
+                  placeholder="例）11/3 大阪飲み会"
+                  className="flex-1 rounded-lg border border-gray-200 px-3 py-2 text-sm bg-white"
                 />
                 <button
-                    onClick={handleAddGroup}
-                    className="bg-[#06C755] text-white px-4 py-2 rounded-lg text-sm"
+                  onClick={handleAddGroup}
+                  className="bg-[#06C755] text-white px-4 py-2 rounded-lg text-sm"
                 >
                   追加
                 </button>
@@ -265,11 +305,20 @@ export default function Page() {
 
           {activeTab === "members" && (
             <div className="space-y-4">
-              <p className="text-xs text-gray-500">
-                対象グループ：
-                {groups.find((g) => g.id === selectedGroupId)?.name ??
-                  "未選択"}
-              </p>
+              <div className="flex justify-between items-center">
+                <p className="text-xs text-gray-500">
+                  対象グループ：
+                  {groups.find((g) => g.id === selectedGroupId)?.name ??
+                    "未選択"}
+                </p>
+                <button
+                  onClick={handleInviteByLine}
+                  className="text-[11px] bg-[#06C755]/10 text-[#06C755] px-3 py-1 rounded-lg"
+                >
+                  LINEで招待
+                </button>
+              </div>
+
               <div className="flex gap-2">
                 <input
                   value={memberName}
@@ -284,6 +333,7 @@ export default function Page() {
                   追加
                 </button>
               </div>
+
               <p className="text-xs text-gray-500">メンバー一覧</p>
               <div className="flex flex-wrap gap-2">
                 {members.map((m) => (
@@ -414,9 +464,49 @@ export default function Page() {
               </div>
             </div>
           )}
+
+          {activeTab === "settle" && (
+            <div className="space-y-4">
+              <p className="text-xs text-gray-500">精算（誰が誰にいくら払うか）</p>
+              {Object.keys(settlementsByCurrency).length === 0 && (
+                <p className="text-xs text-gray-400">
+                  支払いデータが少ないので計算できません
+                </p>
+              )}
+              {Object.entries(settlementsByCurrency).map(
+                ([cur, lines]) => (
+                  <div key={cur} className="bg-white rounded-lg p-3 space-y-2">
+                    <p className="text-xs font-semibold text-gray-700">
+                      通貨: {cur}
+                    </p>
+                    {lines.length === 0 ? (
+                      <p className="text-xs text-gray-400">
+                        精算は不要です（みんな同額負担）
+                      </p>
+                    ) : (
+                      lines.map((line, i) => (
+                        <div
+                          key={i}
+                          className="text-sm flex justify-between gap-2"
+                        >
+                          <span>
+                            {getMemberName(line.from)} →{" "}
+                            {getMemberName(line.to)}
+                          </span>
+                          <span className="font-medium">
+                            {line.amount.toLocaleString()} {line.currency}
+                          </span>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                )
+              )}
+            </div>
+          )}
         </div>
 
-        {/* 下タブ（固定） */}
+        {/* 下タブ */}
         <div className="h-14 bg-white border-t flex">
           <TabItem
             label="グループ"
@@ -438,13 +528,18 @@ export default function Page() {
             active={activeTab === "list"}
             onClick={() => setActiveTab("list")}
           />
+          <TabItem
+            label="精算"
+            active={activeTab === "settle"}
+            onClick={() => setActiveTab("settle")}
+          />
         </div>
       </div>
     </div>
   );
 }
 
-// 下タブ用の小コンポーネント
+// タブ用コンポーネント
 function TabItem({
   label,
   active,
@@ -466,4 +561,80 @@ function TabItem({
   );
 }
 
-  
+/**
+ * 精算ロジック
+ * 通貨ごとに
+ *   - 各メンバーの「実際に払った額」-「負担すべき額」を計算
+ *   - マイナスの人がプラスの人に払うように並べる
+ */
+function calcSettlements(
+  members: Member[],
+  expenses: Expense[]
+): Record<string, SettlementLine[]> {
+  if (members.length === 0 || expenses.length === 0) return {};
+
+  // currency -> memberId -> balance
+  const balances: Record<string, Record<string, number>> = {};
+
+  for (const ex of expenses) {
+    const cur = ex.currency;
+    if (!balances[cur]) balances[cur] = {};
+
+    // 初期化
+    for (const m of members) {
+      if (balances[cur][m.id] === undefined) balances[cur][m.id] = 0;
+    }
+
+    // 払った人に+全額
+    balances[cur][ex.paidBy] += ex.amount;
+
+    // 割る人で等分して - にする
+    const share = ex.amount / ex.participants.length;
+    for (const pid of ex.participants) {
+      balances[cur][pid] -= share;
+    }
+  }
+
+  const result: Record<string, SettlementLine[]> = {};
+
+  for (const [cur, bal] of Object.entries(balances)) {
+    // 正の人(もらう) / 負の人(払う)
+    const creditors: { id: string; amt: number }[] = [];
+    const debtors: { id: string; amt: number }[] = [];
+
+    for (const [mid, v] of Object.entries(bal)) {
+      // 小さい誤差を0に
+      const rounded = Math.round(v * 100) / 100;
+      if (rounded > 0.01) creditors.push({ id: mid, amt: rounded });
+      else if (rounded < -0.01) debtors.push({ id: mid, amt: -rounded });
+    }
+
+    const lines: SettlementLine[] = [];
+
+    // greedy
+    let ci = 0;
+    let di = 0;
+    while (ci < creditors.length && di < debtors.length) {
+      const c = creditors[ci];
+      const d = debtors[di];
+      const pay = Math.min(c.amt, d.amt);
+
+      lines.push({
+        from: d.id,
+        to: c.id,
+        amount: Math.round(pay),
+        currency: cur,
+      });
+
+      c.amt -= pay;
+      d.amt -= pay;
+
+      if (c.amt < 0.01) ci++;
+      if (d.amt < 0.01) di++;
+    }
+
+    result[cur] = lines;
+  }
+
+  return result;
+}
