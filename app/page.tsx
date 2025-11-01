@@ -209,32 +209,45 @@ export default function Page() {
   const settlementsByCurrency = calcSettlements(members, expenses);
 
   // ---------- LINEで招待 ----------
-  const handleInviteByLine = async () => {
-    if (typeof window === "undefined") return;
-    const liff = (window as any).liff;
-    if (!liff) {
-      alert("LIFFが読み込まれていません");
-      return;
-    }
-    if (!liff.isLoggedIn()) {
-      liff.login();
-      return;
-    }
+const handleInviteByLine = async () => {
+  if (typeof window === "undefined") return;
+  const liff = (window as any).liff;
+  const currentUrl = window.location.href;
 
-    // このミニアプリのURLを送る
-    const shareUrl = window.location.href;
-    try {
+  if (!liff) {
+    alert("LINEアプリの中から開いてください（LIFF未ロード）");
+    return;
+  }
+
+  if (!liff.isLoggedIn()) {
+    liff.login();
+    return;
+  }
+
+  try {
+    const canShare =
+      typeof liff.isApiAvailable === "function" &&
+      liff.isApiAvailable("shareTargetPicker");
+
+    if (canShare) {
       await liff.shareTargetPicker([
         {
           type: "text",
-          text: `割り勘アプリに入って！\n${shareUrl}`,
+          text: `割り勘アプリで一緒に清算しよー！\n${currentUrl}`,
         },
       ]);
-    } catch (e) {
-      console.warn(e);
-      alert("LINEでの招待に失敗しました");
+      return;
     }
-  };
+
+    // ここに来るのは「このLINEではshareTargetPickerが使えない」時
+    await liff.openWindow({ url: currentUrl, external: false });
+  } catch (err: any) {
+    // ここで何が返ってるかを見る
+    alert("LINE共有に失敗しました: " + (err?.message || err?.toString()));
+    console.warn("LINE share error", err);
+  }
+};
+
 
   // ========== UI ==========
 
