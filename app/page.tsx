@@ -211,11 +211,16 @@ export default function Page() {
   // ---------- LINEで招待 ----------
 const handleInviteByLine = async () => {
   if (typeof window === "undefined") return;
+  const shareUrl = window.location.href;
+  const msg = `割り勘アプリで一緒に清算しよー！\n${shareUrl}`;
   const liff = (window as any).liff;
-  const currentUrl = window.location.href;
 
+  // LIFFじゃない → 外でLINEシェア
   if (!liff) {
-    alert("LINEアプリの中から開いてください（LIFF未ロード）");
+    window.open(
+      "https://line.me/R/share?text=" + encodeURIComponent(msg),
+      "_blank"
+    );
     return;
   }
 
@@ -230,23 +235,23 @@ const handleInviteByLine = async () => {
       liff.isApiAvailable("shareTargetPicker");
 
     if (canShare) {
-      await liff.shareTargetPicker([
-        {
-          type: "text",
-          text: `割り勘アプリで一緒に清算しよー！\n${currentUrl}`,
-        },
-      ]);
+      await liff.shareTargetPicker([{ type: "text", text: msg }]);
       return;
     }
 
-    // ここに来るのは「このLINEではshareTargetPickerが使えない」時
-    await liff.openWindow({ url: currentUrl, external: false });
-  } catch (err: any) {
-    // ここで何が返ってるかを見る
-    alert("LINE共有に失敗しました: " + (err?.message || err?.toString()));
-    console.warn("LINE share error", err);
+    // ← LIFFは開いたまま、外部ブラウザでLINEのシェアを開く
+    await liff.openWindow({
+      url: "https://line.me/R/share?text=" + encodeURIComponent(msg),
+      external: true,
+    });
+  } catch (e) {
+    await liff.openWindow({
+      url: "https://line.me/R/share?text=" + encodeURIComponent(msg),
+      external: true,
+    });
   }
 };
+
 
 
   // ========== UI ==========
