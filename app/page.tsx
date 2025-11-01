@@ -8,6 +8,9 @@ import {
   query,
   orderBy,
   serverTimestamp,
+  updateDoc,
+  deleteDoc,
+  doc,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 
@@ -39,31 +42,46 @@ type SettlementLine = {
 };
 
 export default function Page() {
-  // UIタブ --------------------------------
+  // タブ
   const [activeTab, setActiveTab] = useState<
     "groups" | "members" | "add" | "list" | "settle"
   >("groups");
 
-  // データ系 --------------------------------
+  // グループ
   const [groups, setGroups] = useState<Group[]>([]);
   const [groupName, setGroupName] = useState("");
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
 
+  // グループ名編集用
+  const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
+  const [editingGroupName, setEditingGroupName] = useState("");
+
+  // メンバー
   const [members, setMembers] = useState<Member[]>([]);
   const [memberName, setMemberName] = useState("");
 
+  // 支払い
   const [expenses, setExpenses] = useState<Expense[]>([]);
 
-  // 入力中の支払い -------------------------
+  // 入力中の支払い
   const [title, setTitle] = useState("");
   const [amount, setAmount] = useState<number>(0);
   const [currency, setCurrency] = useState<"JPY" | "USD">("JPY");
   const [paidBy, setPaidBy] = useState<string>("");
   const [selectedParticipants, setSelectedParticipants] = useState<string[]>([]);
+  const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null);
 
-  // LIFFをCDNから読む（Vercelで落ちない） ----------------
+  // LIFF 読み込み
   useEffect(() => {
     if (typeof window === "undefined") return;
+
+    // クエリから group を読む（固定招待リンク用）
+    const url = new URL(window.location.href);
+    const groupFromQuery = url.searchParams.get("group");
+    if (groupFromQuery) {
+      setSelectedGroupId(groupFromQuery);
+    }
+
     if ((window as any).liff) {
       initLiff((window as any).liff);
       return;
@@ -92,13 +110,15 @@ export default function Page() {
     }
   };
 
-  // グループ取得 ---------------------------
+  // グループ一覧をリアルタイム取得
   useEffect(() => {
     const q = query(collection(db, "groups"), orderBy("createdAt", "desc"));
     const unsub = onSnapshot(q, (snap) => {
       const list: Group[] = [];
       snap.forEach((d) => list.push({ id: d.id, name: d.data().name }));
       setGroups(list);
+
+      // 初回選択
       if (!selectedGroupId && list.length > 0) {
         setSelectedGroupId(list[0].id);
       }
@@ -106,7 +126,7 @@ export default function Page() {
     return () => unsub();
   }, [selectedGroupId]);
 
-  // メンバー取得 ---------------------------
+  // 選択中グループのメンバー
   useEffect(() => {
     if (!selectedGroupId) return;
     const q = query(
@@ -118,8 +138,11 @@ export default function Page() {
       snap.forEach((d) => list.push({ id: d.id, name: d.data().name }));
       setMembers(list);
 
-      // 初期選択
-      if (list.length > 0 && !paidBy) setPaidBy(list[0].id);
+      // 支払者初期値
+      if (list.length > 0 && !paidBy) {
+        setPaidBy(list[0].id);
+      }
+      // 参加者初期値
       if (list.length > 0 && selectedParticipants.length === 0) {
         setSelectedParticipants(list.map((m) => m.id));
       }
@@ -128,7 +151,7 @@ export default function Page() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedGroupId]);
 
-  // 支払い取得 -----------------------------
+  // 選択中グループの支払い
   useEffect(() => {
     if (!selectedGroupId) return;
     const q = query(
@@ -154,7 +177,7 @@ export default function Page() {
     return () => unsub();
   }, [selectedGroupId]);
 
-  // ---------- Actions ----------
+  // グループ追加
   const handleAddGroup = async () => {
     if (!groupName.trim()) return;
     await addDoc(collection(db, "groups"), {
@@ -164,6 +187,20 @@ export default function Page() {
     setGroupName("");
   };
 
+  // グループ名編集保存
+  const handleSaveGroupName = async (groupId: string) => {
+    if (!editingGroupName.trim()) {
+      setEditingGroupId(null);
+      return;
+    }
+    await updateDoc(doc(db, "groups", groupId), {
+      name: editingGroupName.trim(),
+    });
+    setEditingGroupId(null);
+    setEditingGroupName("");
+  };
+
+  // メンバー追加
   const handleAddMember = async () => {
     if (!selectedGroupId) return;
     if (!memberName.trim()) return;
@@ -174,6 +211,7 @@ export default function Page() {
     setMemberName("");
   };
 
+  // 支払い追加 or 更新
   const handleAddExpense = async () => {
     if (!selectedGroupId) return;
     if (!title.trim()) return;
@@ -181,80 +219,116 @@ export default function Page() {
     if (!paidBy) return;
     if (selectedParticipants.length === 0) return;
 
-    await addDoc(collection(db, "groups", selectedGroupId, "expenses"), {
-      title: title.trim(),
-      amount: Number(amount),
-      currency,
-      paidBy,
-      participants: selectedParticipants,
-      createdAt: serverTimestamp(),
-    });
+    if (editingExpenseId) {
+      // 更新
+      await updateDoc(
+        doc(db, "groups", selectedGroupId, "expenses", editingExpenseId),
+        {
+          title: title.trim(),
+          amount: Number(amount),
+          currency,
+          paidBy,
+          participants: selectedParticipants,
+        }
+      );
+      setEditingExpenseId(null);
+    } else {
+      // 新規
+      await addDoc(collection(db, "groups", selectedGroupId, "expenses"), {
+        title: title.trim(),
+        amount: Number(amount),
+        currency,
+        paidBy,
+        participants: selectedParticipants,
+        createdAt: serverTimestamp(),
+      });
+    }
 
+    // フォームリセット
     setTitle("");
     setAmount(0);
   };
 
+  // 支払いの編集ボタン
+  const handleEditExpense = (ex: Expense) => {
+    setEditingExpenseId(ex.id);
+    setTitle(ex.title);
+    setAmount(ex.amount);
+    setCurrency(ex.currency as "JPY" | "USD");
+    setPaidBy(ex.paidBy);
+    setSelectedParticipants(ex.participants);
+    setActiveTab("add");
+  };
+
+  // 支払いの削除ボタン
+  const handleDeleteExpense = async (ex: Expense) => {
+    if (!selectedGroupId) return;
+    if (!confirm("この支払いを削除しますか？")) return;
+    await deleteDoc(doc(db, "groups", selectedGroupId, "expenses", ex.id));
+  };
+
+  // 参加者のON/OFF
   const toggleParticipant = (id: string) => {
     setSelectedParticipants((prev) =>
       prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
     );
   };
 
+  // 表示用ヘルパー
   const getMemberName = (id: string) => {
     const f = members.find((m) => m.id === id);
     return f ? f.name : "(不明)";
   };
 
-  // ---------- 集計（精算） ----------
+  // 精算
   const settlementsByCurrency = calcSettlements(members, expenses);
 
-  // ---------- LINEで招待 ----------
-const handleInviteByLine = async () => {
-  if (typeof window === "undefined") return;
-  const shareUrl = window.location.href;
-  const msg = `割り勘アプリで一緒に清算しよー！\n${shareUrl}`;
-  const liff = (window as any).liff;
+  // グループごとの固定招待リンク生成
+  const handleInviteByLine = async () => {
+    if (typeof window === "undefined") return;
+    const origin = window.location.origin;
+    const groupLink = selectedGroupId
+      ? `${origin}/?group=${selectedGroupId}`
+      : origin;
+    const msg = `割り勘アプリでこのグループに入って！\n${groupLink}`;
 
-  // LIFFじゃない → 外でLINEシェア
-  if (!liff) {
-    window.open(
-      "https://line.me/R/share?text=" + encodeURIComponent(msg),
-      "_blank"
-    );
-    return;
-  }
-
-  if (!liff.isLoggedIn()) {
-    liff.login();
-    return;
-  }
-
-  try {
-    const canShare =
-      typeof liff.isApiAvailable === "function" &&
-      liff.isApiAvailable("shareTargetPicker");
-
-    if (canShare) {
-      await liff.shareTargetPicker([{ type: "text", text: msg }]);
+    const liff = (window as any).liff;
+    // LIFFじゃないときは外部でシェアURL
+    if (!liff) {
+      window.open(
+        "https://line.me/R/share?text=" + encodeURIComponent(msg),
+        "_blank"
+      );
       return;
     }
 
-    // ← LIFFは開いたまま、外部ブラウザでLINEのシェアを開く
-    await liff.openWindow({
-      url: "https://line.me/R/share?text=" + encodeURIComponent(msg),
-      external: true,
-    });
-  } catch (e) {
-    await liff.openWindow({
-      url: "https://line.me/R/share?text=" + encodeURIComponent(msg),
-      external: true,
-    });
-  }
-};
+    if (!liff.isLoggedIn()) {
+      liff.login();
+      return;
+    }
 
+    try {
+      const canShare =
+        typeof liff.isApiAvailable === "function" &&
+        liff.isApiAvailable("shareTargetPicker");
 
+      if (canShare) {
+        await liff.shareTargetPicker([{ type: "text", text: msg }]);
+        return;
+      }
 
-  // ========== UI ==========
+      // LIFFは残したまま外で開く
+      await liff.openWindow({
+        url: "https://line.me/R/share?text=" + encodeURIComponent(msg),
+        external: true,
+      });
+    } catch (e) {
+      await liff.openWindow({
+        url: "https://line.me/R/share?text=" + encodeURIComponent(msg),
+        external: true,
+      });
+    }
+  };
 
   return (
     <div className="min-h-screen bg-[#ECEEF0] flex justify-center">
@@ -274,8 +348,9 @@ const handleInviteByLine = async () => {
           </div>
         </div>
 
-        {/* 中身 */}
+        {/* メイン */}
         <div className="flex-1 overflow-y-auto pb-20 px-4 pt-4 bg-[#F5F7F8]">
+          {/* グループタブ */}
           {activeTab === "groups" && (
             <div className="space-y-4">
               <p className="text-xs text-gray-500">グループを追加</p>
@@ -293,24 +368,67 @@ const handleInviteByLine = async () => {
                   追加
                 </button>
               </div>
+
               <p className="text-xs text-gray-500">グループ一覧</p>
               <div className="space-y-2">
                 {groups.map((g) => (
-                  <button
+                  <div
                     key={g.id}
-                    onClick={() => {
-                      setSelectedGroupId(g.id);
-                      setActiveTab("members");
-                    }}
-                    className={`w-full flex items-center justify-between rounded-xl px-3 py-3 text-sm ${
+                    className={`w-full rounded-xl px-3 py-3 text-sm flex items-center justify-between gap-2 ${
                       selectedGroupId === g.id
                         ? "bg-[#E9FFF1] text-[#0F172A]"
                         : "bg-white text-gray-700"
                     }`}
                   >
-                    <span>{g.name}</span>
-                    <span className="text-[10px] text-gray-400">{g.id}</span>
-                  </button>
+                    {editingGroupId === g.id ? (
+                      <>
+                        <input
+                          value={editingGroupName}
+                          onChange={(e) => setEditingGroupName(e.target.value)}
+                          className="flex-1 border rounded px-2 py-1 text-sm"
+                        />
+                        <button
+                          onClick={() => handleSaveGroupName(g.id)}
+                          className="text-xs bg-[#06C755] text-white px-2 py-1 rounded"
+                        >
+                          保存
+                        </button>
+                        <button
+                          onClick={() => {
+                            setEditingGroupId(null);
+                            setEditingGroupName("");
+                          }}
+                          className="text-xs text-gray-400"
+                        >
+                          キャンセル
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          className="flex-1 text-left"
+                          onClick={() => {
+                            setSelectedGroupId(g.id);
+                            setActiveTab("members");
+                          }}
+                        >
+                          <div>{g.name}</div>
+                          <div className="text-[10px] text-gray-400">
+                            {g.id}
+                          </div>
+                        </button>
+                        <button
+                          onClick={() => {
+                            setEditingGroupId(g.id);
+                            setEditingGroupName(g.name);
+                          }}
+                          className="text-xs text-gray-400"
+                        >
+                          ✏
+                        </button>
+                      </>
+                    )}
+                  </div>
                 ))}
                 {groups.length === 0 && (
                   <p className="text-xs text-gray-400">
@@ -321,6 +439,7 @@ const handleInviteByLine = async () => {
             </div>
           )}
 
+          {/* メンバータブ */}
           {activeTab === "members" && (
             <div className="space-y-4">
               <div className="flex justify-between items-center">
@@ -371,9 +490,12 @@ const handleInviteByLine = async () => {
             </div>
           )}
 
+          {/* 追加タブ */}
           {activeTab === "add" && (
             <div className="space-y-4">
-              <p className="text-xs text-gray-500">支払いを登録</p>
+              <p className="text-xs text-gray-500">
+                {editingExpenseId ? "支払いを編集" : "支払いを登録"}
+              </p>
               <input
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
@@ -443,11 +565,24 @@ const handleInviteByLine = async () => {
                 onClick={handleAddExpense}
                 className="w-full bg-[#06C755] text-white py-2 rounded-lg text-sm"
               >
-                登録する
+                {editingExpenseId ? "更新する" : "登録する"}
               </button>
+              {editingExpenseId && (
+                <button
+                  onClick={() => {
+                    setEditingExpenseId(null);
+                    setTitle("");
+                    setAmount(0);
+                  }}
+                  className="w-full bg-gray-200 text-gray-700 py-2 rounded-lg text-sm"
+                >
+                  編集をやめる
+                </button>
+              )}
             </div>
           )}
 
+          {/* 履歴タブ */}
           {activeTab === "list" && (
             <div className="space-y-4">
               <p className="text-xs text-gray-500">支払い一覧</p>
@@ -455,23 +590,41 @@ const handleInviteByLine = async () => {
                 {expenses.map((ex) => (
                   <div
                     key={ex.id}
-                    className="bg-white rounded-lg p-3 border flex flex-col gap-1"
+                    className="bg-white rounded-lg p-3 border flex justify-between gap-2"
                   >
-                    <div className="flex justify-between text-sm">
-                      <span className="font-medium">{ex.title}</span>
-                      <span>
-                        {ex.amount.toLocaleString()} {ex.currency}
-                      </span>
+                    <div className="flex-1">
+                      <div className="flex justify-between">
+                        <span className="text-sm font-medium">
+                          {ex.title}
+                        </span>
+                        <span className="text-sm">
+                          {ex.amount.toLocaleString()} {ex.currency}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-gray-400">
+                        支払: {getMemberName(ex.paidBy)}
+                      </p>
+                      <p className="text-[11px] text-gray-400">
+                        割る人:{" "}
+                        {ex.participants
+                          .map((id) => getMemberName(id))
+                          .join("・")}
+                      </p>
                     </div>
-                    <p className="text-[11px] text-gray-400">
-                      支払: {getMemberName(ex.paidBy)}
-                    </p>
-                    <p className="text-[11px] text-gray-400">
-                      割る人:{" "}
-                      {ex.participants
-                        .map((id) => getMemberName(id))
-                        .join("・")}
-                    </p>
+                    <div className="flex flex-col gap-2">
+                      <button
+                        onClick={() => handleEditExpense(ex)}
+                        className="text-[11px] bg-[#E9FFF1] text-[#06C755] px-2 py-1 rounded"
+                      >
+                        編集
+                      </button>
+                      <button
+                        onClick={() => handleDeleteExpense(ex)}
+                        className="text-[11px] bg-red-50 text-red-500 px-2 py-1 rounded"
+                      >
+                        削除
+                      </button>
+                    </div>
                   </div>
                 ))}
                 {expenses.length === 0 && (
@@ -483,6 +636,7 @@ const handleInviteByLine = async () => {
             </div>
           )}
 
+          {/* 精算タブ */}
           {activeTab === "settle" && (
             <div className="space-y-4">
               <p className="text-xs text-gray-500">精算（誰が誰にいくら払うか）</p>
@@ -499,7 +653,7 @@ const handleInviteByLine = async () => {
                     </p>
                     {lines.length === 0 ? (
                       <p className="text-xs text-gray-400">
-                        精算は不要です（みんな同額負担）
+                        精算は不要です
                       </p>
                     ) : (
                       lines.map((line, i) => (
@@ -557,7 +711,7 @@ const handleInviteByLine = async () => {
   );
 }
 
-// タブ用コンポーネント
+// 下タブ
 function TabItem({
   label,
   active,
@@ -579,26 +733,18 @@ function TabItem({
   );
 }
 
-/**
- * 精算ロジック
- * 通貨ごとに
- *   - 各メンバーの「実際に払った額」-「負担すべき額」を計算
- *   - マイナスの人がプラスの人に払うように並べる
- */
+// 精算ロジック
 function calcSettlements(
   members: Member[],
   expenses: Expense[]
 ): Record<string, SettlementLine[]> {
   if (members.length === 0 || expenses.length === 0) return {};
 
-  // currency -> memberId -> balance
   const balances: Record<string, Record<string, number>> = {};
 
   for (const ex of expenses) {
     const cur = ex.currency;
     if (!balances[cur]) balances[cur] = {};
-
-    // 初期化
     for (const m of members) {
       if (balances[cur][m.id] === undefined) balances[cur][m.id] = 0;
     }
@@ -606,7 +752,7 @@ function calcSettlements(
     // 払った人に+全額
     balances[cur][ex.paidBy] += ex.amount;
 
-    // 割る人で等分して - にする
+    // 割る人で等分して引く
     const share = ex.amount / ex.participants.length;
     for (const pid of ex.participants) {
       balances[cur][pid] -= share;
@@ -616,20 +762,16 @@ function calcSettlements(
   const result: Record<string, SettlementLine[]> = {};
 
   for (const [cur, bal] of Object.entries(balances)) {
-    // 正の人(もらう) / 負の人(払う)
     const creditors: { id: string; amt: number }[] = [];
     const debtors: { id: string; amt: number }[] = [];
 
     for (const [mid, v] of Object.entries(bal)) {
-      // 小さい誤差を0に
       const rounded = Math.round(v * 100) / 100;
       if (rounded > 0.01) creditors.push({ id: mid, amt: rounded });
       else if (rounded < -0.01) debtors.push({ id: mid, amt: -rounded });
     }
 
     const lines: SettlementLine[] = [];
-
-    // greedy
     let ci = 0;
     let di = 0;
     while (ci < creditors.length && di < debtors.length) {
