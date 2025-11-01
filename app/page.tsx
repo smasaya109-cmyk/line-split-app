@@ -11,6 +11,7 @@ import {
   updateDoc,
   deleteDoc,
   doc,
+  getDocs,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 
@@ -42,28 +43,22 @@ type SettlementLine = {
 };
 
 export default function Page() {
-  // タブ
   const [activeTab, setActiveTab] = useState<
     "groups" | "members" | "add" | "list" | "settle"
   >("groups");
 
-  // グループ
   const [groups, setGroups] = useState<Group[]>([]);
   const [groupName, setGroupName] = useState("");
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
 
-  // グループ名編集用
   const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
   const [editingGroupName, setEditingGroupName] = useState("");
 
-  // メンバー
   const [members, setMembers] = useState<Member[]>([]);
   const [memberName, setMemberName] = useState("");
 
-  // 支払い
   const [expenses, setExpenses] = useState<Expense[]>([]);
 
-  // 入力中の支払い
   const [title, setTitle] = useState("");
   const [amount, setAmount] = useState<number>(0);
   const [currency, setCurrency] = useState<"JPY" | "USD">("JPY");
@@ -71,11 +66,10 @@ export default function Page() {
   const [selectedParticipants, setSelectedParticipants] = useState<string[]>([]);
   const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null);
 
-  // LIFF 読み込み
+  // 初期（LIFF & クエリのgroup）
   useEffect(() => {
     if (typeof window === "undefined") return;
 
-    // クエリから group を読む（固定招待リンク用）
     const url = new URL(window.location.href);
     const groupFromQuery = url.searchParams.get("group");
     if (groupFromQuery) {
@@ -110,15 +104,13 @@ export default function Page() {
     }
   };
 
-  // グループ一覧をリアルタイム取得
+  // グループ一覧
   useEffect(() => {
     const q = query(collection(db, "groups"), orderBy("createdAt", "desc"));
     const unsub = onSnapshot(q, (snap) => {
       const list: Group[] = [];
       snap.forEach((d) => list.push({ id: d.id, name: d.data().name }));
       setGroups(list);
-
-      // 初回選択
       if (!selectedGroupId && list.length > 0) {
         setSelectedGroupId(list[0].id);
       }
@@ -126,7 +118,7 @@ export default function Page() {
     return () => unsub();
   }, [selectedGroupId]);
 
-  // 選択中グループのメンバー
+  // メンバー一覧
   useEffect(() => {
     if (!selectedGroupId) return;
     const q = query(
@@ -138,11 +130,7 @@ export default function Page() {
       snap.forEach((d) => list.push({ id: d.id, name: d.data().name }));
       setMembers(list);
 
-      // 支払者初期値
-      if (list.length > 0 && !paidBy) {
-        setPaidBy(list[0].id);
-      }
-      // 参加者初期値
+      if (list.length > 0 && !paidBy) setPaidBy(list[0].id);
       if (list.length > 0 && selectedParticipants.length === 0) {
         setSelectedParticipants(list.map((m) => m.id));
       }
@@ -151,7 +139,7 @@ export default function Page() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedGroupId]);
 
-  // 選択中グループの支払い
+  // 支払い一覧
   useEffect(() => {
     if (!selectedGroupId) return;
     const q = query(
@@ -187,7 +175,7 @@ export default function Page() {
     setGroupName("");
   };
 
-  // グループ名編集保存
+  // グループ名保存
   const handleSaveGroupName = async (groupId: string) => {
     if (!editingGroupName.trim()) {
       setEditingGroupId(null);
@@ -198,6 +186,39 @@ export default function Page() {
     });
     setEditingGroupId(null);
     setEditingGroupName("");
+  };
+
+  // ★ グループ削除（サブコレクションも消す）
+  const handleDeleteGroup = async (groupId: string) => {
+    if (!confirm("このグループを削除しますか？メンバー・支払いも消えます。")) {
+      return;
+    }
+
+    // 1. members を消す
+    const membersSnap = await getDocs(
+      collection(db, "groups", groupId, "members")
+    );
+    for (const m of membersSnap.docs) {
+      await deleteDoc(m.ref);
+    }
+
+    // 2. expenses を消す
+    const expensesSnap = await getDocs(
+      collection(db, "groups", groupId, "expenses")
+    );
+    for (const e of expensesSnap.docs) {
+      await deleteDoc(e.ref);
+    }
+
+    // 3. groups/{id} を消す
+    await deleteDoc(doc(db, "groups", groupId));
+
+    // 4. 選択中だったら外す
+    if (selectedGroupId === groupId) {
+      setSelectedGroupId(null);
+      setMembers([]);
+      setExpenses([]);
+    }
   };
 
   // メンバー追加
@@ -220,7 +241,6 @@ export default function Page() {
     if (selectedParticipants.length === 0) return;
 
     if (editingExpenseId) {
-      // 更新
       await updateDoc(
         doc(db, "groups", selectedGroupId, "expenses", editingExpenseId),
         {
@@ -233,7 +253,6 @@ export default function Page() {
       );
       setEditingExpenseId(null);
     } else {
-      // 新規
       await addDoc(collection(db, "groups", selectedGroupId, "expenses"), {
         title: title.trim(),
         amount: Number(amount),
@@ -244,12 +263,11 @@ export default function Page() {
       });
     }
 
-    // フォームリセット
     setTitle("");
     setAmount(0);
   };
 
-  // 支払いの編集ボタン
+  // 支払い編集
   const handleEditExpense = (ex: Expense) => {
     setEditingExpenseId(ex.id);
     setTitle(ex.title);
@@ -260,30 +278,27 @@ export default function Page() {
     setActiveTab("add");
   };
 
-  // 支払いの削除ボタン
+  // 支払い削除
   const handleDeleteExpense = async (ex: Expense) => {
     if (!selectedGroupId) return;
     if (!confirm("この支払いを削除しますか？")) return;
     await deleteDoc(doc(db, "groups", selectedGroupId, "expenses", ex.id));
   };
 
-  // 参加者のON/OFF
   const toggleParticipant = (id: string) => {
     setSelectedParticipants((prev) =>
       prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
     );
   };
 
-  // 表示用ヘルパー
   const getMemberName = (id: string) => {
     const f = members.find((m) => m.id === id);
     return f ? f.name : "(不明)";
   };
 
-  // 精算
   const settlementsByCurrency = calcSettlements(members, expenses);
 
-  // グループごとの固定招待リンク生成
+  // グループ招待URL
   const handleInviteByLine = async () => {
     if (typeof window === "undefined") return;
     const origin = window.location.origin;
@@ -293,7 +308,6 @@ export default function Page() {
     const msg = `割り勘アプリでこのグループに入って！\n${groupLink}`;
 
     const liff = (window as any).liff;
-    // LIFFじゃないときは外部でシェアURL
     if (!liff) {
       window.open(
         "https://line.me/R/share?text=" + encodeURIComponent(msg),
@@ -317,7 +331,6 @@ export default function Page() {
         return;
       }
 
-      // LIFFは残したまま外で開く
       await liff.openWindow({
         url: "https://line.me/R/share?text=" + encodeURIComponent(msg),
         external: true,
@@ -348,7 +361,7 @@ export default function Page() {
           </div>
         </div>
 
-        {/* メイン */}
+        {/* 中身 */}
         <div className="flex-1 overflow-y-auto pb-20 px-4 pt-4 bg-[#F5F7F8]">
           {/* グループタブ */}
           {activeTab === "groups" && (
@@ -400,7 +413,7 @@ export default function Page() {
                           }}
                           className="text-xs text-gray-400"
                         >
-                          キャンセル
+                          ✕
                         </button>
                       </>
                     ) : (
@@ -417,15 +430,23 @@ export default function Page() {
                             {g.id}
                           </div>
                         </button>
-                        <button
-                          onClick={() => {
-                            setEditingGroupId(g.id);
-                            setEditingGroupName(g.name);
-                          }}
-                          className="text-xs text-gray-400"
-                        >
-                          ✏
-                        </button>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => {
+                              setEditingGroupId(g.id);
+                              setEditingGroupName(g.name);
+                            }}
+                            className="text-xs text-gray-400"
+                          >
+                            ✏
+                          </button>
+                          <button
+                            onClick={() => handleDeleteGroup(g.id)}
+                            className="text-xs text-red-400"
+                          >
+                            削除
+                          </button>
+                        </div>
                       </>
                     )}
                   </div>
@@ -490,7 +511,7 @@ export default function Page() {
             </div>
           )}
 
-          {/* 追加タブ */}
+          {/* 支払い追加タブ */}
           {activeTab === "add" && (
             <div className="space-y-4">
               <p className="text-xs text-gray-500">
@@ -711,7 +732,6 @@ export default function Page() {
   );
 }
 
-// 下タブ
 function TabItem({
   label,
   active,
@@ -733,7 +753,6 @@ function TabItem({
   );
 }
 
-// 精算ロジック
 function calcSettlements(
   members: Member[],
   expenses: Expense[]
@@ -749,10 +768,8 @@ function calcSettlements(
       if (balances[cur][m.id] === undefined) balances[cur][m.id] = 0;
     }
 
-    // 払った人に+全額
     balances[cur][ex.paidBy] += ex.amount;
 
-    // 割る人で等分して引く
     const share = ex.amount / ex.participants.length;
     for (const pid of ex.participants) {
       balances[cur][pid] -= share;
