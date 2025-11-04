@@ -889,3 +889,23 @@ function calcSettlements(
 
   return result;
 }
+const debugShareEnv = () => {
+  const liff = (window as any).liff;
+  if (!liff) {
+    alert("LIFF: 未ロード（LINEアプリ外か、SDK未読込）");
+    return;
+  }
+  const info = {
+    inClient: liff.isInClient?.() ?? "n/a",
+    isLoggedIn: liff.isLoggedIn?.() ?? "n/a",
+    canShare: typeof liff.isApiAvailable === "function" ? liff.isApiAvailable("shareTargetPicker") : "n/a",
+    os: liff.getOS?.() ?? "n/a",
+    liffVer: liff.getVersion?.() ?? "n/a",
+    url: window.location.href,
+  };
+  alert("Share環境\n" + JSON.stringify(info, null, 2));
+};
+<button onClick={debugShareEnv} className="text-[11px] px-3 py-1 rounded-lg border">
+  共有デバッグ
+</button>
+
