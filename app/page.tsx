@@ -14,10 +14,13 @@ import {
   getDocs,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
+import { inviteByLine } from "@/lib/invite"; // ★ 追加
 
 /** ====== カードのヒーロー画像（HTTPS）をお好みで変更してください ====== */
 const HERO_IMAGE_URL =
   "https://static.line-scdn.net/line_lp/img/meta/og-image.png";
+/** 公式LINEの友だち追加リンク（Vercel/.env.local に設定推奨） */
+const ADD_FRIEND_URL = process.env.NEXT_PUBLIC_LINE_ADD_FRIEND_URL || "";
 /** ================================================================ */
 
 type Group = { id: string; name: string };
@@ -59,7 +62,10 @@ export default function Page() {
   const [selectedParticipants, setSelectedParticipants] = useState<string[]>([]);
   const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null);
 
-  // 初期化（LIFF + ?group=）
+  // 友だち状態（true=友だち済み / false=未フレンド / null=不明）
+  const [isFriend, setIsFriend] = useState<boolean | null>(null);
+
+  // 初期化（LIFF + ?group= + 友だち状態チェック）
   useEffect(() => {
     if (typeof window === "undefined") return;
 
@@ -72,9 +78,19 @@ export default function Page() {
       if (!liff) return;
       try {
         await liff.init({ liffId: process.env.NEXT_PUBLIC_LIFF_ID! });
-        if (!liff.isLoggedIn()) return;
-        const profile = await liff.getProfile();
-        setMemberName(profile.displayName || "");
+        await liff.ready;
+
+        try {
+          const fr = await liff.getFriendship();
+          setIsFriend(!!fr?.friendFlag);
+        } catch {
+          setIsFriend(null);
+        }
+
+        if (liff.isLoggedIn()) {
+          const profile = await liff.getProfile();
+          setMemberName(profile.displayName || "");
+        }
       } catch (e) {
         console.warn("LIFF init error", e);
       }
@@ -252,115 +268,24 @@ export default function Page() {
   // 精算
   const settlementsByCurrency = calcSettlements(members, expenses);
 
-  /** 招待：LINE Flexカードで送る（無理ならURLシェアへフォールバック） */
+  /** 招待：LINE共有（未対応はURLコピー） */
   const handleInviteByLine = async () => {
-    if (typeof window === "undefined") return;
-    const origin = window.location.origin;
-    const groupLink = selectedGroupId ? `${origin}/?group=${selectedGroupId}` : origin;
+    if (!selectedGroupId) {
+      alert("先にグループを選択してください");
+      return;
+    }
+    const name = groups.find((g) => g.id === selectedGroupId)?.name ?? "割り勘グループ";
+    await inviteByLine(selectedGroupId, name); // ★ 置き換え済み
+  };
 
-    const groupName =
-      groups.find((g) => g.id === selectedGroupId)?.name ?? "割り勘グループ";
-    const membersCount = members.length;
-
-    // —— 画像付き・ボタン付きの「カード」（Flex Message）——
-    const flexInvite: any = {
-      type: "flex",
-      altText: `"${groupName}"から招待が届きました！`,
-      contents: {
-        type: "bubble",
-        hero: {
-          type: "image",
-          url: HERO_IMAGE_URL,
-          size: "full",
-          aspectRatio: "20:13",
-          aspectMode: "cover",
-          action: { type: "uri", label: "open", uri: groupLink },
-        },
-        body: {
-          type: "box",
-          layout: "vertical",
-          contents: [
-            {
-              type: "text",
-              text: `"${groupName}"から招待が届きました！`,
-              wrap: true,
-              weight: "bold",
-              size: "lg",
-            },
-          ],
-        },
-        footer: {
-          type: "box",
-          layout: "vertical",
-          spacing: "md",
-          contents: [
-            {
-              type: "button",
-              style: "primary",
-              color: "#06C755",
-              action: { type: "uri", label: "参加する", uri: groupLink },
-            },
-            {
-              type: "box",
-              layout: "baseline",
-              contents: [
-                {
-                  type: "text",
-                  text: `メンバー ${membersCount}人`,
-                  size: "xs",
-                  color: "#aaaaaa",
-                },
-              ],
-            },
-          ],
-          flex: 0,
-        },
-        styles: { footer: { separator: true } },
-      },
-    };
-
-    const textBackup = {
-      type: "text",
-      text: `"${groupName}" に参加しよう！\n${groupLink}`,
-    };
-
+  /** 公式LINEの「友だち追加」ボタン押下時 */
+  const handleAddFriendClick = () => {
+    const url = ADD_FRIEND_URL || "https://lin.ee/xxxxx"; // 未設定時フォールバック
     const liff = (window as any).liff;
-
-    if (!liff) {
-      // LIFF外（Safari/Chromeなどで直接開いた場合）はURLシェアへ
-      window.open(
-        "https://line.me/R/share?text=" + encodeURIComponent(textBackup.text),
-        "_blank"
-      );
-      return;
-    }
-
-    if (!liff.isLoggedIn()) {
-      liff.login();
-      return;
-    }
-
-    try {
-      const canShare =
-        typeof liff.isApiAvailable === "function" &&
-        liff.isApiAvailable("shareTargetPicker");
-
-      if (canShare) {
-        // ここがカード配信の本体
-        await liff.shareTargetPicker([flexInvite], { isMultiple: true });
-        return;
-      }
-
-      // shareTargetPicker不可端末 → URLシェアへ
-      await liff.openWindow({
-        url: "https://line.me/R/share?text=" + encodeURIComponent(textBackup.text),
-        external: true,
-      });
-    } catch {
-      await liff.openWindow({
-        url: "https://line.me/R/share?text=" + encodeURIComponent(textBackup.text),
-        external: true,
-      });
+    if (liff?.openWindow) {
+      liff.openWindow({ url, external: true });
+    } else {
+      window.open(url, "_blank");
     }
   };
 
@@ -678,6 +603,20 @@ export default function Page() {
                   )}
                 </div>
               ))}
+
+              {/* ▼ ここが追加：未フレンド時だけ小さな友だち追加ボタン */}
+              {isFriend === false && (
+                <div className="pt-2 flex justify-center">
+                  <button
+                    onClick={handleAddFriendClick}
+                    className="text-[11px] px-3 py-1 rounded-lg border border-[#06C755] text-[#06C755] bg-white"
+                    title="公式LINEを友だち追加すると招待や共有がスムーズになります"
+                  >
+                    公式LINEを友だち追加
+                  </button>
+                </div>
+              )}
+              {/* ▲ ここまで */}
             </div>
           )}
         </div>
