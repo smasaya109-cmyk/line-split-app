@@ -15,7 +15,11 @@ import {
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 
-// ---- 型定義 ----
+/** ====== カードのヒーロー画像（HTTPS）をお好みで変更してください ====== */
+const HERO_IMAGE_URL =
+  "https://static.line-scdn.net/line_lp/img/meta/og-image.png";
+/** ================================================================ */
+
 type Group = { id: string; name: string };
 type Member = { id: string; name: string };
 type Expense = {
@@ -30,24 +34,23 @@ type Expense = {
 type SettlementLine = { from: string; to: string; amount: number; currency: string };
 
 export default function Page() {
-  // ---- タブ ----
-  const [activeTab, setActiveTab] = useState<
-    "groups" | "members" | "add" | "list" | "settle"
-  >("groups");
+  // タブ
+  const [activeTab, setActiveTab] = useState<"groups" | "members" | "add" | "list" | "settle">(
+    "groups"
+  );
 
-  // ---- グループ ----
+  // グループ
   const [groups, setGroups] = useState<Group[]>([]);
   const [groupName, setGroupName] = useState("");
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
-  // 編集
   const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
   const [editingGroupName, setEditingGroupName] = useState("");
 
-  // ---- メンバー ----
+  // メンバー
   const [members, setMembers] = useState<Member[]>([]);
   const [memberName, setMemberName] = useState("");
 
-  // ---- 支払い ----
+  // 支払い
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [title, setTitle] = useState("");
   const [amount, setAmount] = useState<number>(0);
@@ -56,22 +59,20 @@ export default function Page() {
   const [selectedParticipants, setSelectedParticipants] = useState<string[]>([]);
   const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null);
 
-  // ---- 初期化（LIFF + クエリの ?group= を読む）----
+  // 初期化（LIFF + ?group=）
   useEffect(() => {
     if (typeof window === "undefined") return;
 
-    // クエリから固定グループIDを取得
     const url = new URL(window.location.href);
     const groupFromQuery = url.searchParams.get("group");
     if (groupFromQuery) setSelectedGroupId(groupFromQuery);
 
-    // LIFF SDKの準備
     const start = async () => {
       const liff = (window as any).liff;
-      if (!liff) return; // ブラウザ直開きでも動くように無視
+      if (!liff) return;
       try {
         await liff.init({ liffId: process.env.NEXT_PUBLIC_LIFF_ID! });
-        if (!liff.isLoggedIn()) return; // 必要に応じてログインボタン方式に
+        if (!liff.isLoggedIn()) return;
         const profile = await liff.getProfile();
         setMemberName(profile.displayName || "");
       } catch (e) {
@@ -90,7 +91,7 @@ export default function Page() {
     }
   }, []);
 
-  // ---- グループ一覧（リアルタイム）----
+  // グループ一覧
   useEffect(() => {
     const q = query(collection(db, "groups"), orderBy("createdAt", "desc"));
     const unsub = onSnapshot(q, (snap) => {
@@ -102,7 +103,7 @@ export default function Page() {
     return () => unsub();
   }, [selectedGroupId]);
 
-  // ---- メンバー一覧（選択グループ）----
+  // メンバー一覧
   useEffect(() => {
     if (!selectedGroupId) return;
     const q = query(
@@ -122,7 +123,7 @@ export default function Page() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedGroupId]);
 
-  // ---- 支払い一覧（選択グループ）----
+  // 支払い一覧
   useEffect(() => {
     if (!selectedGroupId) return;
     const q = query(
@@ -148,7 +149,7 @@ export default function Page() {
     return () => unsub();
   }, [selectedGroupId]);
 
-  // ---- グループ操作 ----
+  // グループ操作
   const handleAddGroup = async () => {
     if (!groupName.trim()) return;
     await addDoc(collection(db, "groups"), {
@@ -168,18 +169,13 @@ export default function Page() {
     setEditingGroupName("");
   };
 
-  // サブコレクションごとグループ削除
   const handleDeleteGroup = async (groupId: string) => {
     if (!confirm("このグループを削除しますか？メンバー・支払いも消えます。")) return;
-
     const membersSnap = await getDocs(collection(db, "groups", groupId, "members"));
     for (const m of membersSnap.docs) await deleteDoc(m.ref);
-
     const expensesSnap = await getDocs(collection(db, "groups", groupId, "expenses"));
     for (const e of expensesSnap.docs) await deleteDoc(e.ref);
-
     await deleteDoc(doc(db, "groups", groupId));
-
     if (selectedGroupId === groupId) {
       setSelectedGroupId(null);
       setMembers([]);
@@ -187,7 +183,7 @@ export default function Page() {
     }
   };
 
-  // ---- メンバー追加 ----
+  // メンバー追加
   const handleAddMember = async () => {
     if (!selectedGroupId) return;
     if (!memberName.trim()) return;
@@ -198,7 +194,7 @@ export default function Page() {
     setMemberName("");
   };
 
-  // ---- 支払い追加/更新 ----
+  // 支払い追加/更新
   const handleAddExpense = async () => {
     if (!selectedGroupId) return;
     if (!title.trim()) return;
@@ -251,18 +247,14 @@ export default function Page() {
     );
   };
 
-  const getMemberName = (id: string) => {
-    const f = members.find((m) => m.id === id);
-    return f ? f.name : "(不明)";
-  };
+  const getMemberName = (id: string) => members.find((m) => m.id === id)?.name ?? "(不明)";
 
-  // ---- 精算（誰が誰にいくら）----
+  // 精算
   const settlementsByCurrency = calcSettlements(members, expenses);
 
-  // ==== 招待（LINEのFlexカードで共有）ここから ====
+  /** 招待：LINE Flexカードで送る（無理ならURLシェアへフォールバック） */
   const handleInviteByLine = async () => {
     if (typeof window === "undefined") return;
-
     const origin = window.location.origin;
     const groupLink = selectedGroupId ? `${origin}/?group=${selectedGroupId}` : origin;
 
@@ -270,42 +262,32 @@ export default function Page() {
       groups.find((g) => g.id === selectedGroupId)?.name ?? "割り勘グループ";
     const membersCount = members.length;
 
-    // Flex（カード）メッセージ（型は厳密にしない）
+    // —— 画像付き・ボタン付きの「カード」（Flex Message）——
     const flexInvite: any = {
       type: "flex",
-      altText: `「${groupName}」に参加しよう`,
+      altText: `"${groupName}"から招待が届きました！`,
       contents: {
         type: "bubble",
-        header: {
-          type: "box",
-          layout: "vertical",
-          contents: [
-            { type: "text", text: "割り勘だよ", weight: "bold", size: "sm", color: "#06C755" },
-            { type: "text", text: groupName, weight: "bold", size: "lg", wrap: true }
-          ],
-          paddingBottom: "md"
+        hero: {
+          type: "image",
+          url: HERO_IMAGE_URL,
+          size: "full",
+          aspectRatio: "20:13",
+          aspectMode: "cover",
+          action: { type: "uri", label: "open", uri: groupLink },
         },
         body: {
           type: "box",
           layout: "vertical",
-          spacing: "sm",
           contents: [
             {
-              type: "box",
-              layout: "baseline",
-              contents: [
-                { type: "text", text: "メンバー", size: "xs", color: "#999999", flex: 2 },
-                { type: "text", text: `${membersCount}人`, size: "xs", color: "#333333", flex: 5 }
-              ]
-            },
-            {
               type: "text",
-              text: "このカードから参加して、支払いを登録・自動精算できます。",
-              size: "xs",
-              color: "#666666",
-              wrap: true
-            }
-          ]
+              text: `"${groupName}"から招待が届きました！`,
+              wrap: true,
+              weight: "bold",
+              size: "lg",
+            },
+          ],
         },
         footer: {
           type: "box",
@@ -316,29 +298,36 @@ export default function Page() {
               type: "button",
               style: "primary",
               color: "#06C755",
-              action: { type: "uri", label: "グループに参加", uri: groupLink }
+              action: { type: "uri", label: "参加する", uri: groupLink },
             },
             {
-              type: "button",
-              style: "link",
-              action: { type: "uri", label: "使い方を見る", uri: origin }
-            }
-          ]
+              type: "box",
+              layout: "baseline",
+              contents: [
+                {
+                  type: "text",
+                  text: `メンバー ${membersCount}人`,
+                  size: "xs",
+                  color: "#aaaaaa",
+                },
+              ],
+            },
+          ],
+          flex: 0,
         },
-        styles: { footer: { separator: true } }
-      }
+        styles: { footer: { separator: true } },
+      },
     };
 
-    // フォールバック用テキスト
     const textBackup = {
       type: "text",
-      text: `割り勘アプリでこのグループに入って！\n${groupLink}`
+      text: `"${groupName}" に参加しよう！\n${groupLink}`,
     };
 
     const liff = (window as any).liff;
 
-    // LIFF外（普通のブラウザ）：LINEのシェアURLに飛ばす
     if (!liff) {
+      // LIFF外（Safari/Chromeなどで直接開いた場合）はURLシェアへ
       window.open(
         "https://line.me/R/share?text=" + encodeURIComponent(textBackup.text),
         "_blank"
@@ -346,7 +335,6 @@ export default function Page() {
       return;
     }
 
-    // ログイン未済ならログイン
     if (!liff.isLoggedIn()) {
       liff.login();
       return;
@@ -358,31 +346,28 @@ export default function Page() {
         liff.isApiAvailable("shareTargetPicker");
 
       if (canShare) {
-        // Flexカードで送信（複数宛先選択OK）
+        // ここがカード配信の本体
         await liff.shareTargetPicker([flexInvite], { isMultiple: true });
         return;
       }
 
-      // 使えない環境はURLシェアへ（LIFFは保持・外部で開くので画面は維持）
+      // shareTargetPicker不可端末 → URLシェアへ
       await liff.openWindow({
         url: "https://line.me/R/share?text=" + encodeURIComponent(textBackup.text),
-        external: true
+        external: true,
       });
-    } catch (e) {
-      // 例外時もURLシェアに退避
+    } catch {
       await liff.openWindow({
         url: "https://line.me/R/share?text=" + encodeURIComponent(textBackup.text),
-        external: true
+        external: true,
       });
     }
   };
-  // ==== 招待（LINEのFlexカードで共有）ここまで ====
 
-  // ---- UI ----
   return (
     <div className="min-h-screen bg-[#ECEEF0] flex justify-center">
       <div className="relative w-full max-w-md bg-white min-h-screen flex flex-col">
-        {/* ヘッダー */}
+        {/* Header */}
         <div className="h-14 flex items-center justify-between px-4 border-b">
           <div>
             <p className="text-sm font-semibold">割り勘だよ</p>
@@ -394,9 +379,9 @@ export default function Page() {
           </div>
         </div>
 
-        {/* 本文 */}
+        {/* Body */}
         <div className="flex-1 overflow-y-auto pb-20 px-4 pt-4 bg-[#F5F7F8]">
-          {/* グループタブ */}
+          {/* Groups */}
           {activeTab === "groups" && (
             <div className="space-y-4">
               <p className="text-xs text-gray-500">グループを追加</p>
@@ -489,7 +474,7 @@ export default function Page() {
             </div>
           )}
 
-          {/* メンバータブ */}
+          {/* Members */}
           {activeTab === "members" && (
             <div className="space-y-4">
               <div className="flex justify-between items-center">
@@ -534,7 +519,7 @@ export default function Page() {
             </div>
           )}
 
-          {/* 追加タブ */}
+          {/* Add expense */}
           {activeTab === "add" && (
             <div className="space-y-4">
               <p className="text-xs text-gray-500">
@@ -622,7 +607,7 @@ export default function Page() {
             </div>
           )}
 
-          {/* 履歴タブ */}
+          {/* List */}
           {activeTab === "list" && (
             <div className="space-y-4">
               <p className="text-xs text-gray-500">支払い一覧</p>
@@ -639,9 +624,7 @@ export default function Page() {
                           {ex.amount.toLocaleString()} {ex.currency}
                         </span>
                       </div>
-                      <p className="text-[11px] text-gray-400">
-                        支払: {getMemberName(ex.paidBy)}
-                      </p>
+                      <p className="text-[11px] text-gray-400">支払: {getMemberName(ex.paidBy)}</p>
                       <p className="text-[11px] text-gray-400">
                         割る人: {ex.participants.map((id) => getMemberName(id)).join("・")}
                       </p>
@@ -669,7 +652,7 @@ export default function Page() {
             </div>
           )}
 
-          {/* 精算タブ */}
+          {/* Settle */}
           {activeTab === "settle" && (
             <div className="space-y-4">
               <p className="text-xs text-gray-500">精算（誰が誰にいくら払うか）</p>
@@ -699,7 +682,7 @@ export default function Page() {
           )}
         </div>
 
-        {/* 下タブ */}
+        {/* Tabs */}
         <div className="h-14 bg-white border-t flex">
           <TabItem label="グループ" active={activeTab === "groups"} onClick={() => setActiveTab("groups")} />
           <TabItem label="メンバー" active={activeTab === "members"} onClick={() => setActiveTab("members")} />
@@ -712,7 +695,6 @@ export default function Page() {
   );
 }
 
-// ---- タブコンポーネント ----
 function TabItem({
   label,
   active,
@@ -734,22 +716,18 @@ function TabItem({
   );
 }
 
-// ---- 精算ロジック ----
+// 精算
 function calcSettlements(members: Member[], expenses: Expense[]): Record<string, SettlementLine[]> {
   if (members.length === 0 || expenses.length === 0) return {};
-
   const balances: Record<string, Record<string, number>> = {};
+
   for (const ex of expenses) {
     const cur = ex.currency;
     if (!balances[cur]) balances[cur] = {};
-    for (const m of members) {
-      if (balances[cur][m.id] === undefined) balances[cur][m.id] = 0;
-    }
+    for (const m of members) if (balances[cur][m.id] === undefined) balances[cur][m.id] = 0;
 
-    // 払った人に+全額
     balances[cur][ex.paidBy] += ex.amount;
 
-    // 参加者で等分して引く
     const share = ex.amount / ex.participants.length;
     for (const pid of ex.participants) balances[cur][pid] -= share;
   }
@@ -760,7 +738,7 @@ function calcSettlements(members: Member[], expenses: Expense[]): Record<string,
     const debtors: { id: string; amt: number }[] = [];
 
     for (const [mid, vRaw] of Object.entries(bal)) {
-      const v = Math.round(vRaw * 100) / 100; // 誤差丸め
+      const v = Math.round(vRaw * 100) / 100;
       if (v > 0.01) creditors.push({ id: mid, amt: v });
       else if (v < -0.01) debtors.push({ id: mid, amt: -v });
     }
@@ -785,5 +763,3 @@ function calcSettlements(members: Member[], expenses: Expense[]): Record<string,
   }
   return result;
 }
-
-
