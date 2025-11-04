@@ -65,47 +65,63 @@ export default function Page() {
   // 友だち状態（true=友だち済み / false=未フレンド / null=不明）
   const [isFriend, setIsFriend] = useState<boolean | null>(null);
 
-  // 初期化（LIFF + ?group= + 友だち状態チェック）
-  useEffect(() => {
-    if (typeof window === "undefined") return;
+// 初期化（LIFF + ?group= + 友だち状態チェックを堅牢化）
+useEffect(() => {
+  if (typeof window === "undefined") return;
 
-    const url = new URL(window.location.href);
-    const groupFromQuery = url.searchParams.get("group");
-    if (groupFromQuery) setSelectedGroupId(groupFromQuery);
+  const url = new URL(window.location.href);
+  const groupFromQuery = url.searchParams.get("group");
+  if (groupFromQuery) setSelectedGroupId(groupFromQuery);
 
-    const start = async () => {
-      const liff = (window as any).liff;
-      if (!liff) return;
+  const start = async () => {
+    const w = window as any;
+    try {
+      // SDKがまだなら動的ロード
+      if (!w.liff) {
+        await new Promise<void>((resolve, reject) => {
+          const s = document.createElement("script");
+          s.src = "https://static.line-scdn.net/liff/edge/2/sdk.js";
+          s.async = true;
+          s.onload = () => resolve();
+          s.onerror = () => reject(new Error("LIFF SDK load failed"));
+          document.body.appendChild(s);
+        });
+      }
+      const liff = w.liff;
+
+      await liff.init({ liffId: process.env.NEXT_PUBLIC_LIFF_ID! });
+      await liff.ready;
+
+      // LINEアプリ内かどうか
+      const inClient = typeof liff.isInClient === "function" ? liff.isInClient() : false;
+
+      // 友だち状態チェック：失敗してもUIは出すため、nullのままにしない
       try {
-        await liff.init({ liffId: process.env.NEXT_PUBLIC_LIFF_ID! });
-        await liff.ready;
+        const fr = await liff.getFriendship();
+        // frが取れればtrue/false、取れなければ fallback で false 扱いに
+        setIsFriend(typeof fr?.friendFlag === "boolean" ? fr.friendFlag : false);
+      } catch {
+        // 判定不能でもボタンは出したいので false にしておく
+        setIsFriend(false);
+      }
 
+      // ログイン済みなら表示名を控える（任意）
+      if (inClient && liff.isLoggedIn()) {
         try {
-          const fr = await liff.getFriendship();
-          setIsFriend(!!fr?.friendFlag);
-        } catch {
-          setIsFriend(null);
-        }
-
-        if (liff.isLoggedIn()) {
           const profile = await liff.getProfile();
           setMemberName(profile.displayName || "");
-        }
-      } catch (e) {
-        console.warn("LIFF init error", e);
+        } catch {}
       }
-    };
-
-    if ((window as any).liff) {
-      start();
-    } else {
-      const s = document.createElement("script");
-      s.src = "https://static.line-scdn.net/liff/edge/2/sdk.js";
-      s.async = true;
-      s.onload = start;
-      document.body.appendChild(s);
+    } catch (e) {
+      console.warn("LIFF init error", e);
+      // 初期化できなかった場合でも、ボタンは出したいので false 扱い
+      setIsFriend(false);
     }
-  }, []);
+  };
+
+  start();
+}, []);
+
 
   // グループ一覧
   useEffect(() => {
@@ -605,17 +621,17 @@ export default function Page() {
               ))}
 
               {/* ▼ ここが追加：未フレンド時だけ小さな友だち追加ボタン */}
-              {isFriend === false && (
-                <div className="pt-2 flex justify-center">
-                  <button
-                    onClick={handleAddFriendClick}
-                    className="text-[11px] px-3 py-1 rounded-lg border border-[#06C755] text-[#06C755] bg-white"
-                    title="公式LINEを友だち追加すると招待や共有がスムーズになります"
-                  >
-                    公式LINEを友だち追加
-                  </button>
-                </div>
-              )}
+              {isFriend !== true && (
+  <div className="pt-2 flex justify-center">
+    <button
+      onClick={handleAddFriendClick}
+      className="text-[11px] px-3 py-1 rounded-lg border border-[#06C755] text-[#06C755] bg-white"
+      title="公式LINEを友だち追加すると招待や共有がスムーズになります"
+    >
+      公式LINEを友だち追加
+    </button>
+  </div>
+)}
               {/* ▲ ここまで */}
             </div>
           )}
