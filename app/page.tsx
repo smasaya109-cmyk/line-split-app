@@ -298,50 +298,124 @@ export default function Page() {
 
   const settlementsByCurrency = calcSettlements(members, expenses);
 
-  // グループ招待URL
-  const handleInviteByLine = async () => {
-    if (typeof window === "undefined") return;
-    const origin = window.location.origin;
-    const groupLink = selectedGroupId
-      ? `${origin}/?group=${selectedGroupId}`
-      : origin;
-    const msg = `割り勘アプリでこのグループに入って！\n${groupLink}`;
+// === 招待（LINEのFlexカードで共有）ここから ===
+const handleInviteByLine = async () => {
+  if (typeof window === "undefined") return;
 
-    const liff = (window as any).liff;
-    if (!liff) {
-      window.open(
-        "https://line.me/R/share?text=" + encodeURIComponent(msg),
-        "_blank"
-      );
-      return;
+  const origin = window.location.origin;
+  const groupLink = selectedGroupId ? `${origin}/?group=${selectedGroupId}` : origin;
+
+  const groupName =
+    groups.find((g) => g.id === selectedGroupId)?.name ?? "割り勘グループ";
+  const membersCount = members.length;
+
+  // Flex（カード）メッセージ
+  const flexInvite = {
+    type: "flex",
+    altText: `「${groupName}」に参加しよう`,
+    contents: {
+      type: "bubble",
+      header: {
+        type: "box",
+        layout: "vertical",
+        contents: [
+          { type: "text", text: "割り勘だよ", weight: "bold", size: "sm", color: "#06C755" },
+          { type: "text", text: groupName, weight: "bold", size: "lg", wrap: true }
+        ],
+        paddingBottom: "md"
+      },
+      body: {
+        type: "box",
+        layout: "vertical",
+        spacing: "sm",
+        contents: [
+          {
+            type: "box",
+            layout: "baseline",
+            contents: [
+              { type: "text", text: "メンバー", size: "xs", color: "#999999", flex: 2 },
+              { type: "text", text: `${membersCount}人`, size: "xs", color: "#333333", flex: 5 }
+            ]
+          },
+          {
+            type: "text",
+            text: "このカードから参加して、支払いを登録・自動精算できます。",
+            size: "xs",
+            color: "#666666",
+            wrap: true
+          }
+        ]
+      },
+      footer: {
+        type: "box",
+        layout: "vertical",
+        spacing: "md",
+        contents: [
+          {
+            type: "button",
+            style: "primary",
+            color: "#06C755",
+            action: { type: "uri", label: "グループに参加", uri: groupLink }
+          },
+          {
+            type: "button",
+            style: "link",
+            action: { type: "uri", label: "使い方を見る", uri: origin }
+          }
+        ]
+      },
+      styles: { footer: { separator: true } }
     }
+  } as const;
 
-    if (!liff.isLoggedIn()) {
-      liff.login();
-      return;
-    }
-
-    try {
-      const canShare =
-        typeof liff.isApiAvailable === "function" &&
-        liff.isApiAvailable("shareTargetPicker");
-
-      if (canShare) {
-        await liff.shareTargetPicker([{ type: "text", text: msg }]);
-        return;
-      }
-
-      await liff.openWindow({
-        url: "https://line.me/R/share?text=" + encodeURIComponent(msg),
-        external: true,
-      });
-    } catch (e) {
-      await liff.openWindow({
-        url: "https://line.me/R/share?text=" + encodeURIComponent(msg),
-        external: true,
-      });
-    }
+  // フォールバック用テキスト
+  const textBackup = {
+    type: "text",
+    text: `割り勘アプリでこのグループに入って！\n${groupLink}`
   };
+
+  const liff = (window as any).liff;
+
+  // LIFF外（普通のブラウザ）：LINEのシェアURLに飛ばす
+  if (!liff) {
+    window.open(
+      "https://line.me/R/share?text=" + encodeURIComponent(textBackup.text),
+      "_blank"
+    );
+    return;
+  }
+
+  if (!liff.isLoggedIn()) {
+    liff.login();
+    return;
+  }
+
+  try {
+    const canShare =
+      typeof liff.isApiAvailable === "function" &&
+      liff.isApiAvailable("shareTargetPicker");
+
+    if (canShare) {
+      // Flexカードで送信（複数宛先選択OK）
+      await liff.shareTargetPicker([flexInvite], { isMultiple: true });
+      return;
+    }
+
+    // 使えない環境はURLシェアへ（LIFFは保持）
+    await liff.openWindow({
+      url: "https://line.me/R/share?text=" + encodeURIComponent(textBackup.text),
+      external: true
+    });
+  } catch (e) {
+    // 例外時もURLシェアに退避
+    await liff.openWindow({
+      url: "https://line.me/R/share?text=" + encodeURIComponent(textBackup.text),
+      external: true
+    });
+  }
+};
+// === 招待（LINEのFlexカードで共有）ここまで ===
+
 
   return (
     <div className="min-h-screen bg-[#ECEEF0] flex justify-center">
