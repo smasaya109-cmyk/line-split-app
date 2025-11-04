@@ -628,7 +628,7 @@ useEffect(() => {
       className="text-[11px] px-3 py-1 rounded-lg border border-[#06C755] text-[#06C755] bg-white"
       title="公式LINEを友だち追加すると招待や共有がスムーズになります"
     >
-      公式LINEを友だち追加
+      "みんなで割り勘"を友だち追加
     </button>
   </div>
 )}
