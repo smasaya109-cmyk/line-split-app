@@ -19,7 +19,7 @@ import { onAuthStateChanged } from 'firebase/auth';
 import { db, auth } from '@/lib/firebase';
 import { inviteByLine } from '@/lib/invite';
 
-/** ====== 招待カードの画像（HTTPS）をお好みで変更 ====== */
+/** ====== 招待カードのデフォルト画像（HTTPS） ====== */
 const HERO_IMAGE_URL =
   'https://static.line-scdn.net/line_lp/img/meta/og-image.png';
 
@@ -68,7 +68,7 @@ export default function Page() {
   const [selectedParticipants, setSelectedParticipants] = useState<string[]>([]);
   const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null);
 
-  // 認証監視（lib/firebase.ts 側でも匿名ログインを開始しているが、ここでは uid を状態に反映）
+  // 認証監視
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => {
       setUid(u?.uid ?? null);
@@ -76,7 +76,7 @@ export default function Page() {
     return () => unsub();
   }, []);
 
-  // クエリパラメータ ?group= を拾う
+  // ?group= を拾う
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const url = new URL(window.location.href);
@@ -156,7 +156,7 @@ export default function Page() {
     }
     if (!groupName.trim()) return;
 
-   const ref = await addDoc(collection(db, 'groups'), {
+    const ref = await addDoc(collection(db, 'groups'), {
       name: groupName.trim(),
       createdAt: serverTimestamp(),
       ownerUid: uid,
@@ -202,7 +202,7 @@ export default function Page() {
     }
   };
 
-  // メンバー追加（ルール側でオーナーのみ許可。MVPではオーナーが招待して追加）
+  // メンバー追加
   const handleAddMember = async () => {
     if (!selectedGroupId) return;
     if (!memberName.trim()) return;
@@ -273,22 +273,19 @@ export default function Page() {
   // 精算
   const settlementsByCurrency = calcSettlements(members, expenses);
 
-  // LINE招待（lib/invite.ts 経由）
+  // LINE 招待（lib/invite.ts 経由）
   const handleInvite = async () => {
     if (!selectedGroupId) return;
     const name = groups.find((g) => g.id === selectedGroupId)?.name ?? '割り勘グループ';
-    // window が使えるクライアント側で絶対URLを作る
-const heroImageUrl =
-  typeof window !== "undefined"
-    ? `${window.location.origin}/card.png`
-    : "https://line-split.vercel.app/card.png"; // ビルド時のフォールバック（自分の本番URLに合わせてOK）
 
-await inviteByLine(
-  selectedGroupId!,
-  name ?? "割り勘グループ",
-  heroImageUrl
-);
+    // 画像は /public/card.png を最優先（なければデフォルト）
+    const heroImageUrl =
+      typeof window !== 'undefined'
+        ? `${window.location.origin}/card.png`
+        : 'https://line-split.vercel.app/card.png';
 
+    await inviteByLine(selectedGroupId!, name, heroImageUrl || HERO_IMAGE_URL);
+  }; // ← ← ← これが抜けていた（関数の閉じカッコ）
 
   // 友だち追加
   const handleAddFriend = () => {
@@ -697,7 +694,8 @@ function calcSettlements(members: Member[], expenses: Expense[]): Record<string,
     }
 
     const lines: SettlementLine[] = [];
-    let ci = 0, di = 0;
+    let ci = 0,
+      di = 0;
     while (ci < creditors.length && di < debtors.length) {
       const c = creditors[ci];
       const d = debtors[di];
