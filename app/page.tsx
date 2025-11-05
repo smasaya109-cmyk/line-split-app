@@ -285,7 +285,7 @@ export default function Page() {
         : 'https://line-split.vercel.app/card.png';
 
     await inviteByLine(selectedGroupId!, name, heroImageUrl || HERO_IMAGE_URL);
-  }; // ← ← ← これが抜けていた（関数の閉じカッコ）
+  }; // ← 閉じカッコを忘れない！
 
   // 友だち追加
   const handleAddFriend = () => {
@@ -504,7 +504,7 @@ export default function Page() {
                 </select>
               </div>
 
-              <div className="space-y-1 bg-white rounded-lg p-3">
+              <div className="space-y-1 bg白 rounded-lg p-3">
                 <p className="text-xs text-gray-500 mb-1">割るメンバー</p>
                 <div className="flex flex-wrap gap-2">
                   {members.map((m) => (
@@ -713,4 +713,5 @@ function calcSettlements(members: Member[], expenses: Expense[]): Record<string,
   }
   return result;
 }
+
 
