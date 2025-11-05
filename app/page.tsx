@@ -156,7 +156,7 @@ export default function Page() {
     }
     if (!groupName.trim()) return;
 
-    const ref = await addDoc(collection(db, 'groups'), {
+   const ref = await addDoc(collection(db, 'groups'), {
       name: groupName.trim(),
       createdAt: serverTimestamp(),
       ownerUid: uid,
