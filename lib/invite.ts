@@ -102,3 +102,10 @@ export async function inviteByLine(groupId: string, groupName: string) {
     }
   }
 }
+console.log({
+  inClient: liff.isInClient?.(),
+  loggedIn: liff.isLoggedIn?.(),
+  canShare: liff.isApiAvailable?.("shareTargetPicker"),
+  ctx: liff.getContext?.(),
+});
+
