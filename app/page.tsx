@@ -277,12 +277,18 @@ export default function Page() {
   const handleInvite = async () => {
     if (!selectedGroupId) return;
     const name = groups.find((g) => g.id === selectedGroupId)?.name ?? '割り勘グループ';
-    await inviteByLine({
-      groupId: selectedGroupId,
-      groupName: name,
-      heroImageUrl: HERO_IMAGE_URL,
-    });
-  };
+    // window が使えるクライアント側で絶対URLを作る
+const heroImageUrl =
+  typeof window !== "undefined"
+    ? `${window.location.origin}/card.png`
+    : "https://line-split.vercel.app/card.png"; // ビルド時のフォールバック（自分の本番URLに合わせてOK）
+
+await inviteByLine(
+  selectedGroupId!,
+  name ?? "割り勘グループ",
+  heroImageUrl
+);
+
 
   // 友だち追加
   const handleAddFriend = () => {
