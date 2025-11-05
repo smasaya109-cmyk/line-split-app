@@ -1,6 +1,7 @@
+// app/page.tsx
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   collection,
   addDoc,
@@ -12,24 +13,25 @@ import {
   deleteDoc,
   doc,
   getDocs,
+  setDoc,
+  getDoc,
+  where,
+  arrayUnion,
 } from "firebase/firestore";
-import { db } from "@/lib/firebase";
-import { inviteByLine } from "@/lib/invite"; // ★ 追加
+import { db, auth } from "@/lib/firebase";
+import { onAuthStateChanged } from "firebase/auth";
+import { inviteByLine } from "@/lib/invite";
 
-/** ====== カードのヒーロー画像（HTTPS）をお好みで変更してください ====== */
-const HERO_IMAGE_URL =
-  "https://static.line-scdn.net/line_lp/img/meta/og-image.png";
-/** 公式LINEの友だち追加リンク（Vercel/.env.local に設定推奨） */
-const ADD_FRIEND_URL = process.env.NEXT_PUBLIC_LINE_ADD_FRIEND_URL || "";
-/** ================================================================ */
+/** カード画像（/public） */
+const HERO_IMAGE_URL = "/card.png";
 
-type Group = { id: string; name: string };
-type Member = { id: string; name: string };
+type Group = { id: string; name: string; ownerUid: string; memberUids?: string[]; createdAt?: any };
+type Member = { id: string; name: string; uid?: string };
 type Expense = {
   id: string;
   title: string;
   amount: number;
-  currency: string;
+  currency: "JPY" | "USD";
   paidBy: string;
   participants: string[];
   createdAt?: any;
@@ -41,6 +43,9 @@ export default function Page() {
   const [activeTab, setActiveTab] = useState<"groups" | "members" | "add" | "list" | "settle">(
     "groups"
   );
+
+  // Auth
+  const [uid, setUid] = useState<string | null>(null);
 
   // グループ
   const [groups, setGroups] = useState<Group[]>([]);
@@ -62,89 +67,61 @@ export default function Page() {
   const [selectedParticipants, setSelectedParticipants] = useState<string[]>([]);
   const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null);
 
-  // 友だち状態（true=友だち済み / false=未フレンド / null=不明）
-  const [isFriend, setIsFriend] = useState<boolean | null>(null);
-
-// 初期化（LIFF + ?group= + 友だち状態チェックを堅牢化）
-useEffect(() => {
-  if (typeof window === "undefined") return;
-
-  const url = new URL(window.location.href);
-  const groupFromQuery = url.searchParams.get("group");
-  if (groupFromQuery) setSelectedGroupId(groupFromQuery);
-
-  const start = async () => {
-    const w = window as any;
-    try {
-      // SDKがまだなら動的ロード
-      if (!w.liff) {
-        await new Promise<void>((resolve, reject) => {
-          const s = document.createElement("script");
-          s.src = "https://static.line-scdn.net/liff/edge/2/sdk.js";
-          s.async = true;
-          s.onload = () => resolve();
-          s.onerror = () => reject(new Error("LIFF SDK load failed"));
-          document.body.appendChild(s);
-        });
-      }
-      const liff = w.liff;
-
-      await liff.init({ liffId: process.env.NEXT_PUBLIC_LIFF_ID! });
-      await liff.ready;
-
-      // LINEアプリ内かどうか
-      const inClient = typeof liff.isInClient === "function" ? liff.isInClient() : false;
-
-      // 友だち状態チェック：失敗してもUIは出すため、nullのままにしない
-      try {
-        const fr = await liff.getFriendship();
-        // frが取れればtrue/false、取れなければ fallback で false 扱いに
-        setIsFriend(typeof fr?.friendFlag === "boolean" ? fr.friendFlag : false);
-      } catch {
-        // 判定不能でもボタンは出したいので false にしておく
-        setIsFriend(false);
-      }
-
-      // ログイン済みなら表示名を控える（任意）
-      if (inClient && liff.isLoggedIn()) {
-        try {
-          const profile = await liff.getProfile();
-          setMemberName(profile.displayName || "");
-        } catch {}
-      }
-    } catch (e) {
-      console.warn("LIFF init error", e);
-      // 初期化できなかった場合でも、ボタンは出したいので false 扱い
-      setIsFriend(false);
-    }
-  };
-
-  start();
-}, []);
-
-
-  // グループ一覧
+  // URL / LIFF 初期化
   useEffect(() => {
-    const q = query(collection(db, "groups"), orderBy("createdAt", "desc"));
-    const unsub = onSnapshot(q, (snap) => {
+    if (typeof window === "undefined") return;
+    const u = new URL(window.location.href);
+    const gid = u.searchParams.get("group");
+    if (gid) setSelectedGroupId(gid);
+  }, []);
+
+  // Firebase Auth の監視
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (user) => {
+      setUid(user?.uid ?? null);
+    });
+    return () => unsub();
+  }, []);
+
+  // 自分が関係あるグループだけ取得（memberUids に自分が含まれる）
+  useEffect(() => {
+    if (!uid) return;
+    const q1 = query(
+      collection(db, "groups"),
+      where("memberUids", "array-contains", uid),
+      orderBy("createdAt", "desc")
+    );
+    const unsub = onSnapshot(q1, (snap) => {
       const list: Group[] = [];
-      snap.forEach((d) => list.push({ id: d.id, name: d.data().name }));
+      snap.forEach((d) => {
+        const data = d.data() as any;
+        list.push({
+          id: d.id,
+          name: data.name,
+          ownerUid: data.ownerUid,
+          memberUids: data.memberUids || [],
+          createdAt: data.createdAt,
+        });
+      });
       setGroups(list);
       if (!selectedGroupId && list.length > 0) setSelectedGroupId(list[0].id);
     });
     return () => unsub();
-  }, [selectedGroupId]);
+  }, [uid, selectedGroupId]);
 
-  // メンバー一覧
+  // グループのメンバー一覧
   useEffect(() => {
-    if (!selectedGroupId) return;
+    if (!selectedGroupId || !uid) return;
     const q = query(
       collection(db, "groups", selectedGroupId, "members"),
       orderBy("joinedAt", "asc")
     );
     const unsub = onSnapshot(q, (snap) => {
       const list: Member[] = [];
-      snap.forEach((d) => list.push({ id: d.id, name: d.data().name }));
+      snap.forEach((d) => {
+        const data = d.data() as any;
+        list.push({ id: d.id, name: data.name, uid: data.uid });
+      });
       setMembers(list);
       if (list.length > 0 && !paidBy) setPaidBy(list[0].id);
       if (list.length > 0 && selectedParticipants.length === 0) {
@@ -153,11 +130,11 @@ useEffect(() => {
     });
     return () => unsub();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedGroupId]);
+  }, [selectedGroupId, uid]);
 
   // 支払い一覧
   useEffect(() => {
-    if (!selectedGroupId) return;
+    if (!selectedGroupId || !uid) return;
     const q = query(
       collection(db, "groups", selectedGroupId, "expenses"),
       orderBy("createdAt", "desc")
@@ -179,16 +156,55 @@ useEffect(() => {
       setExpenses(list);
     });
     return () => unsub();
-  }, [selectedGroupId]);
+  }, [selectedGroupId, uid]);
 
-  // グループ操作
+  // 招待リンクから来たら参加登録（/api/groups/join）
+  useEffect(() => {
+    (async () => {
+      if (typeof window === "undefined") return;
+      if (!uid || !selectedGroupId) return;
+      const u = new URL(window.location.href);
+      const isInvite = u.searchParams.get("invite") === "1";
+      if (!isInvite) return;
+
+      try {
+        const idToken = await auth.currentUser?.getIdToken();
+        if (!idToken) return;
+        await fetch("/api/groups/join", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${idToken}`,
+          },
+          body: JSON.stringify({ groupId: selectedGroupId, name: memberName || "メンバー" }),
+        });
+      } catch (e) {
+        console.warn("join API failed", e);
+      }
+    })();
+  }, [uid, selectedGroupId, memberName]);
+
+  // グループ追加（ownerUid & memberUids を付与し、自分の members/{uid} を作成）
   const handleAddGroup = async () => {
+    if (!uid) return alert("ログインが必要です");
     if (!groupName.trim()) return;
-    await addDoc(collection(db, "groups"), {
+
+    const ref = await addDoc(collection(db, "groups"), {
       name: groupName.trim(),
       createdAt: serverTimestamp(),
+      ownerUid: uid,
+      memberUids: [uid],
     });
+
+    await setDoc(doc(db, "groups", ref.id, "members", uid), {
+      uid,
+      name: memberName || "あなた",
+      joinedAt: serverTimestamp(),
+    });
+
     setGroupName("");
+    setSelectedGroupId(ref.id);
+    setActiveTab("members");
   };
 
   const handleSaveGroupName = async (groupId: string) => {
@@ -215,7 +231,7 @@ useEffect(() => {
     }
   };
 
-  // メンバー追加
+  // メンバー追加（手入力の仮メンバー）
   const handleAddMember = async () => {
     if (!selectedGroupId) return;
     if (!memberName.trim()) return;
@@ -261,7 +277,7 @@ useEffect(() => {
     setEditingExpenseId(ex.id);
     setTitle(ex.title);
     setAmount(ex.amount);
-    setCurrency(ex.currency as "JPY" | "USD");
+    setCurrency(ex.currency);
     setPaidBy(ex.paidBy);
     setSelectedParticipants(ex.participants);
     setActiveTab("add");
@@ -282,28 +298,32 @@ useEffect(() => {
   const getMemberName = (id: string) => members.find((m) => m.id === id)?.name ?? "(不明)";
 
   // 精算
-  const settlementsByCurrency = calcSettlements(members, expenses);
+  const settlementsByCurrency = useMemo(
+    () => calcSettlements(members, expenses),
+    [members, expenses]
+  );
 
-  /** 招待：LINE共有（未対応はURLコピー） */
+  // 招待（Flexカード or フォールバック）
   const handleInviteByLine = async () => {
-    if (!selectedGroupId) {
-      alert("先にグループを選択してください");
-      return;
-    }
-    const name = groups.find((g) => g.id === selectedGroupId)?.name ?? "割り勘グループ";
-    await inviteByLine(selectedGroupId, name); // ★ 置き換え済み
+    if (!selectedGroupId) return;
+    const g = groups.find((x) => x.id === selectedGroupId);
+    await inviteByLine(selectedGroupId, g?.name || "割り勘グループ");
   };
 
-  /** 公式LINEの「友だち追加」ボタン押下時 */
-  const handleAddFriendClick = () => {
-    const url = ADD_FRIEND_URL || "https://lin.ee/xxxxx"; // 未設定時フォールバック
-    const liff = (window as any).liff;
-    if (liff?.openWindow) {
-      liff.openWindow({ url, external: true });
-    } else {
-      window.open(url, "_blank");
-    }
-  };
+  // オーナーかどうか（UI制御）
+  const isOwner = useMemo(() => {
+    if (!uid || !selectedGroupId) return false;
+    const g = groups.find((x) => x.id === selectedGroupId);
+    return g?.ownerUid === uid;
+  }, [uid, selectedGroupId, groups]);
+
+  if (!uid) {
+    return (
+      <div className="min-h-screen flex items-center justify-center text-sm text-gray-600">
+        ログイン中です…（LINEから開いているか確認してください）
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-[#ECEEF0] flex justify-center">
@@ -341,7 +361,7 @@ useEffect(() => {
                 </button>
               </div>
 
-              <p className="text-xs text-gray-500">グループ一覧</p>
+              <p className="text-xs text-gray-500">あなたのグループ</p>
               <div className="space-y-2">
                 {groups.map((g) => (
                   <div
@@ -384,25 +404,34 @@ useEffect(() => {
                             setActiveTab("members");
                           }}
                         >
-                          <div>{g.name}</div>
+                          <div className="flex items-center gap-2">
+                            <span>{g.name}</span>
+                            {g.ownerUid === uid && (
+                              <span className="text-[10px] text-gray-400">(オーナー)</span>
+                            )}
+                          </div>
                           <div className="text-[10px] text-gray-400">{g.id}</div>
                         </button>
                         <div className="flex gap-2">
-                          <button
-                            onClick={() => {
-                              setEditingGroupId(g.id);
-                              setEditingGroupName(g.name);
-                            }}
-                            className="text-xs text-gray-400"
-                          >
-                            ✏
-                          </button>
-                          <button
-                            onClick={() => handleDeleteGroup(g.id)}
-                            className="text-xs text-red-400"
-                          >
-                            削除
-                          </button>
+                          {isOwner && selectedGroupId === g.id && (
+                            <button
+                              onClick={() => {
+                                setEditingGroupId(g.id);
+                                setEditingGroupName(g.name);
+                              }}
+                              className="text-xs text-gray-400"
+                            >
+                              ✏
+                            </button>
+                          )}
+                          {g.ownerUid === uid && (
+                            <button
+                              onClick={() => handleDeleteGroup(g.id)}
+                              className="text-xs text-red-400"
+                            >
+                              削除
+                            </button>
+                          )}
                         </div>
                       </>
                     )}
@@ -423,12 +452,14 @@ useEffect(() => {
                   対象グループ：
                   {groups.find((g) => g.id === selectedGroupId)?.name ?? "未選択"}
                 </p>
-                <button
-                  onClick={handleInviteByLine}
-                  className="text-[11px] bg-[#06C755]/10 text-[#06C755] px-3 py-1 rounded-lg"
-                >
-                  LINEで招待
-                </button>
+                <div className="flex gap-2">
+                  <button
+                    onClick={handleInviteByLine}
+                    className="text-[11px] bg-[#06C755]/10 text-[#06C755] px-3 py-1 rounded-lg"
+                  >
+                    LINEで招待
+                  </button>
+                </div>
               </div>
 
               <div className="flex gap-2">
@@ -619,20 +650,6 @@ useEffect(() => {
                   )}
                 </div>
               ))}
-
-              {/* ▼ ここが追加：未フレンド時だけ小さな友だち追加ボタン */}
-              {isFriend !== true && (
-  <div className="pt-2 flex justify-center">
-    <button
-      onClick={handleAddFriendClick}
-      className="text-[11px] px-3 py-1 rounded-lg border border-[#06C755] text-[#06C755] bg-white"
-      title="公式LINEを友だち追加すると招待や共有がスムーズになります"
-    >
-      "みんなで割り勘"を友だち追加
-    </button>
-  </div>
-)}
-              {/* ▲ ここまで */}
             </div>
           )}
         </div>
@@ -671,7 +688,7 @@ function TabItem({
   );
 }
 
-// 精算
+// 精算（同一通貨ごと）
 function calcSettlements(members: Member[], expenses: Expense[]): Record<string, SettlementLine[]> {
   if (members.length === 0 || expenses.length === 0) return {};
   const balances: Record<string, Record<string, number>> = {};
@@ -682,7 +699,6 @@ function calcSettlements(members: Member[], expenses: Expense[]): Record<string,
     for (const m of members) if (balances[cur][m.id] === undefined) balances[cur][m.id] = 0;
 
     balances[cur][ex.paidBy] += ex.amount;
-
     const share = ex.amount / ex.participants.length;
     for (const pid of ex.participants) balances[cur][pid] -= share;
   }
@@ -699,8 +715,7 @@ function calcSettlements(members: Member[], expenses: Expense[]): Record<string,
     }
 
     const lines: SettlementLine[] = [];
-    let ci = 0,
-      di = 0;
+    let ci = 0, di = 0;
     while (ci < creditors.length && di < debtors.length) {
       const c = creditors[ci];
       const d = debtors[di];

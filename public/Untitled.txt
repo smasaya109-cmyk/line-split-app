@@ -1,0 +1,23 @@
+本番URL：　https://line-split.vercel.app/
+アプリ名：　みんなで割り勘
+連絡先Eメール：　s.masaya109@gmail.com
+運営者：　佐々木雅也
+
+Liff ID：　2008401276-Z2Rg8kWE
+apiKey: "AIzaSyBybt9HJ7sy2C8j9lfHGbXpOFQXkKBXiKM",
+authDomain: "line-split-app.firebaseapp.com",
+projectId: "line-split-app",
+storageBucket: "line-split-app.firebasestorage.app",
+messagingSenderId: "28904665289",
+appId: "1:28904665289:web:eef63b9d956620ff359d18",
+measurementId: "G-3PMCWWF25V"
+
+
+NEXT_PUBLIC_LIFF_ID=2008401276-Z2Rg8kWE
+NEXT_PUBLIC_FIREBASE_API_KEY="AIzaSyBybt9HJ7sy2C8j9lfHGbXpOFQXkKBXiKM"
+NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN="line-split-app.firebaseapp.com"
+NEXT_PUBLIC_FIREBASE_PROJECT_ID="line-split-app"
+NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET="line-split-app.firebasestorage.app"
+NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID="28904665289"
+NEXT_PUBLIC_FIREBASE_APP_ID="1:28904665289:web:eef63b9d956620ff359d18"
+NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID="G-3PMCWWF25V"
