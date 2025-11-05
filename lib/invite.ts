@@ -1,104 +1,151 @@
-"use client";
+/* lib/invite.ts */
+/* eslint-disable @typescript-eslint/no-explicit-any */
 
-/**
- * LIFFを確実に使える状態にする。
- * - SDK未読込なら動的ロード
- * - init未実行でも初期化
- */
-async function ensureLiff(): Promise<any> {
-  if (typeof window === "undefined") throw new Error("No window");
-  const w = window as any;
-
-  // SDKを動的ロード
-  if (!w.liff) {
-    await new Promise<void>((resolve, reject) => {
-      const s = document.createElement("script");
-      s.src = "https://static.line-scdn.net/liff/edge/2/sdk.js";
-      s.async = true;
-      s.onload = () => resolve();
-      s.onerror = () => reject(new Error("Failed to load LIFF SDK"));
-      document.body.appendChild(s);
-    });
+// window.liff の型を雑に許可（TSビルドで未定義エラーにならないように）
+declare global {
+  interface Window {
+    liff?: any;
   }
-  const liff = w.liff;
-
-  const liffId = process.env.NEXT_PUBLIC_LIFF_ID;
-  if (!liffId) throw new Error("NEXT_PUBLIC_LIFF_ID is missing");
-
-  // 2回目以降のinitもOK（LIFF側が握りつぶす）
-  await liff.init({ liffId });
-  await liff.ready;
-
-  return liff;
 }
 
-/** 参加用URL（/?group=...&invite=1）を生成 */
+/** 招待リンクは LIFF ディープリンクにします（常に LINE アプリ内で起動） */
 export function buildInviteUrl(groupId: string) {
   const liffId = process.env.NEXT_PUBLIC_LIFF_ID!;
-  // ← LIFFのディープリンク形式にするのがポイント！
   const url = new URL(`https://liff.line.me/${liffId}`);
   url.searchParams.set("group", groupId);
   url.searchParams.set("invite", "1");
   return url.toString();
 }
 
+/** LIFF を遅延ロード＆初期化（ブラウザのみ） */
+async function loadLiff(): Promise<any> {
+  if (typeof window === "undefined") throw new Error("no window");
+  if (!window.liff) {
+    await new Promise<void>((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = "https://static.line-scdn.net/liff/edge/2/sdk.js";
+      s.async = true;
+      s.onload = () => resolve();
+      s.onerror = () => reject(new Error("LIFF SDK load failed"));
+      document.head.appendChild(s);
+    });
+  }
+  const l = window.liff!;
+  if (!l._initCalled) {
+    await l.init({ liffId: process.env.NEXT_PUBLIC_LIFF_ID! });
+    l._initCalled = true;
+  }
+  await l.ready;
+  return l;
+}
 
-/**
- * 招待の本体。
- * - LINEアプリ内 & shareTargetPicker可 → 共有ピッカー
- * - それ以外 → LINE共有URL or クリップボードにフォールバック
- * - アプリ内で未ログインなら liff.login() に誘導（戻ってきたらもう一度押せばOK）
- */
+/** 友だちへ招待（Flex → だめならURLシェアにフォールバック） */
 export async function inviteByLine(groupId: string, groupName: string) {
-  const url = buildInviteUrl(groupId);
-  const text = `「${groupName}」に招待します！\n参加して割り勘しよう👇\n${url}`;
-  const lineShareUrl = "https://line.me/R/share?text=" + encodeURIComponent(text);
+  if (typeof window === "undefined") return;
+
+  const inviteUrl = buildInviteUrl(groupId);
+  const textBackup = {
+    type: "text",
+    text: `"${groupName}" に参加しよう！\n${inviteUrl}`,
+  };
+
+  const l = await loadLiff().catch(() => undefined);
+
+  // LIFFが取れなければURLシェアへ
+  if (!l) {
+    window.open(
+      "https://line.me/R/share?text=" + encodeURIComponent(textBackup.text),
+      "_blank"
+    );
+    return;
+  }
+
+  if (!l.isLoggedIn?.()) {
+    l.login();
+    return;
+  }
+
+  const flex = {
+    type: "flex",
+    altText: `"${groupName}"から招待が届きました！`,
+    contents: {
+      type: "bubble",
+      hero: {
+        type: "image",
+        url: "https://static.line-scdn.net/line_lp/img/meta/og-image.png",
+        size: "full",
+        aspectRatio: "20:13",
+        aspectMode: "cover",
+        action: { type: "uri", label: "open", uri: inviteUrl },
+      },
+      body: {
+        type: "box",
+        layout: "vertical",
+        contents: [
+          {
+            type: "text",
+            text: `"${groupName}"から招待が届きました！`,
+            wrap: true,
+            weight: "bold",
+            size: "lg",
+          },
+        ],
+      },
+      footer: {
+        type: "box",
+        layout: "vertical",
+        contents: [
+          {
+            type: "button",
+            style: "primary",
+            color: "#06C755",
+            action: { type: "uri", label: "参加する", uri: inviteUrl },
+          },
+        ],
+        flex: 0,
+      },
+    },
+  } as any;
 
   try {
-    const liff = await ensureLiff();
-    const inClient =
-      typeof liff.isInClient === "function" ? liff.isInClient() : false;
-    const loggedIn = typeof liff.isLoggedIn === "function" ? liff.isLoggedIn() : false;
-
-    // アプリ内だが未ログイン → まずログイン（戻ったら再タップで共有OK）
-    if (inClient && !loggedIn) {
-      liff.login({ redirectUri: window.location.href });
-      return;
-    }
-
-    // アプリ内 & 共有APIあり → 共有ピッカー
-    const canShare =
-      inClient &&
-      typeof liff.isApiAvailable === "function" &&
-      liff.isApiAvailable("shareTargetPicker");
-
+    const canShare = l.isInClient?.() && l.isApiAvailable?.("shareTargetPicker");
     if (canShare) {
-      await liff.shareTargetPicker([{ type: "text", text }], { isMultiple: true });
+      await l.shareTargetPicker([flex]);
       return;
     }
-
-    // アプリ内だが共有APIなし → 共有URLを外部で開く
-    if (inClient) {
-      await liff.openWindow({ url: lineShareUrl, external: true });
-      return;
-    }
-
-    // LINE外ブラウザ → まずクリップボード
-    try {
-      await navigator.clipboard.writeText(url);
-      alert("招待URLをコピーしました。LINEトークに貼り付けて送ってください。");
-    } catch {
-      // クリップボード不可なら共有URLを新規タブで
-      window.open(lineShareUrl, "_blank");
-    }
-  } catch (err) {
-    console.error("inviteByLine error:", err);
-    // 何か失敗しても最後の砦：クリップボード or 共有URL
-    try {
-      await navigator.clipboard.writeText(url);
-      alert("招待URLをコピーしました。LINEトークに貼り付けて送ってください。");
-    } catch {
-      window.open(lineShareUrl, "_blank");
-    }
+    // 端末がピッカー未対応 → URLシェア
+    await l.openWindow({
+      url: "https://line.me/R/share?text=" + encodeURIComponent(textBackup.text),
+      external: true,
+    });
+  } catch {
+    await l.openWindow({
+      url: "https://line.me/R/share?text=" + encodeURIComponent(textBackup.text),
+      external: true,
+    });
   }
+}
+
+/** LINEアプリで現在のURLを開き直す */
+export async function openInLineAppCurrentUrl() {
+  if (typeof window === "undefined") return;
+  const l = await loadLiff().catch(() => undefined);
+  if (l) {
+    l.openWindow({ url: window.location.href, external: false });
+  } else {
+    alert("LINEアプリから開いてください。");
+  }
+}
+
+/** 簡易診断（ページ側の“診断”ボタン用） */
+export async function liffDiagnostics() {
+  if (typeof window === "undefined")
+    return { inClient: false, loggedIn: false, canShare: false, ctx: undefined as any };
+  const l = await loadLiff().catch(() => undefined);
+  if (!l) return { inClient: false, loggedIn: false, canShare: false, ctx: undefined as any };
+  const inClient = !!l.isInClient?.();
+  const loggedIn = !!l.isLoggedIn?.();
+  const canShare = inClient && !!l.isApiAvailable?.("shareTargetPicker");
+  const ctx = l.getContext?.();
+  return { inClient, loggedIn, canShare, ctx };
 }
