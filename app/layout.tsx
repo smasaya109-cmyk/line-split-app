@@ -1,51 +1,41 @@
-import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
-import "./globals.css";
-
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
-
 // app/layout.tsx
-export const metadata = {
+import "./globals.css";
+import type { Metadata } from "next";
+
+export const metadata: Metadata = {
   title: "みんなで割り勘",
   description: "LINE連携でサクッと割り勘＆自動精算",
-  metadataBase: new URL("https://line-split.vercel.app"),
+  icons: {
+    icon: "/favicon.ico",
+    apple: "/apple-touch-icon.png",
+    other: [
+      { rel: "icon", url: "/app-icon-192.png", sizes: "192x192" },
+      { rel: "icon", url: "/app-icon-512.png", sizes: "512x512" },
+    ],
+  },
   openGraph: {
     title: "みんなで割り勘",
     description: "LINE連携でサクッと割り勘＆自動精算",
-    url: "https://line-split.vercel.app",
+    url: "https://line-split.vercel.app/",
     siteName: "みんなで割り勘",
-    images: ["/og.png"], // public/og.png に 1200x630 の画像を置くと綺麗
+    images: [{ url: "/card.png", width: 1200, height: 780 }],
+    locale: "ja_JP",
     type: "website",
   },
   twitter: {
     card: "summary_large_image",
     title: "みんなで割り勘",
     description: "LINE連携でサクッと割り勘＆自動精算",
-    images: ["/og.png"],
+    images: ["/card.png"],
   },
+  manifest: "/manifest.webmanifest",
 };
 
-
-export default function RootLayout({
-  children,
-}: Readonly<{
-  children: React.ReactNode;
-}>) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
-      <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
-      >
-        {children}
-      </body>
+    <html lang="ja">
+      <body>{children}</body>
     </html>
   );
 }
+
