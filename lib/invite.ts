@@ -34,13 +34,14 @@ async function ensureLiff(): Promise<any> {
 
 /** 参加用URL（/?group=...&invite=1）を生成 */
 export function buildInviteUrl(groupId: string) {
-  const origin =
-    typeof window !== "undefined" ? window.location.origin : "https://line-split.vercel.app";
-  const url = new URL(origin);
+  const liffId = process.env.NEXT_PUBLIC_LIFF_ID!;
+  // ← LIFFのディープリンク形式にするのがポイント！
+  const url = new URL(`https://liff.line.me/${liffId}`);
   url.searchParams.set("group", groupId);
-  url.searchParams.set("invite", "1"); // 招待ゲート用フラグ
+  url.searchParams.set("invite", "1");
   return url.toString();
 }
+
 
 /**
  * 招待の本体。
