@@ -1,43 +1,41 @@
 // app/api/groups/join/route.ts
-import { NextResponse } from "next/server";
-import { adminAuth, adminDb } from "@/lib/firebaseAdmin";
+import { NextRequest, NextResponse } from "next/server";
+import { adminDb, adminAuth, FieldValue, adminFs } from "@/lib/firebaseAdmin";
 
-export async function POST(req: Request) {
+export async function POST(req: NextRequest) {
   try {
-    const authHeader = req.headers.get("authorization") || "";
-    const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
-    if (!token) return NextResponse.json({ error: "no auth" }, { status: 401 });
+    const authz = req.headers.get("authorization") || "";
+    const token = authz.startsWith("Bearer ") ? authz.slice(7) : "";
+    if (!token) return NextResponse.json({ error: "missing token" }, { status: 401 });
 
     const decoded = await adminAuth.verifyIdToken(token);
-    const uid = decoded.uid; // "line:xxxxxxxx"
+    const uid = decoded.uid;
 
     const { groupId, displayName } = await req.json();
-    if (!groupId) return NextResponse.json({ error: "no groupId" }, { status: 400 });
+    if (!groupId) return NextResponse.json({ error: "groupId required" }, { status: 400 });
 
     const groupRef = adminDb.collection("groups").doc(groupId);
-    const snap = await groupRef.get();
-    if (!snap.exists) return NextResponse.json({ error: "not found" }, { status: 404 });
+    await adminDb.runTransaction(async (tx) => {
+      const gs = await tx.get(groupRef);
+      if (!gs.exists) throw new Error("group not found");
 
-    // すでに見えていればOK（冪等化）
-    const data = snap.data()!;
-    const visibleTo: string[] = Array.isArray(data.visibleTo) ? data.visibleTo : [];
-    if (!visibleTo.includes(uid)) {
-      visibleTo.push(uid);
-      await groupRef.update({ visibleTo });
-    }
+      // visibleTo に uid を追加
+      tx.update(groupRef, { visibleTo: FieldValue.arrayUnion(uid) });
 
-    // メンバーサブコレクションに自分を追加（冪等）
-    const memberRef = groupRef.collection("members").doc(uid);
-    const m = await memberRef.get();
-    if (!m.exists) {
-      await memberRef.set({
-        name: displayName || "LINEユーザー",
-        joinedAt: new Date(),
-      });
-    }
+      // members/{uid} がなければ作成（id=uidにしておくと参照しやすい）
+      const memberRef = groupRef.collection("members").doc(uid);
+      const ms = await tx.get(memberRef);
+      if (!ms.exists) {
+        tx.set(memberRef, {
+          name: displayName || "LINEユーザー",
+          uid,
+          joinedAt: adminFs.FieldValue.serverTimestamp(),
+        });
+      }
+    });
 
     return NextResponse.json({ ok: true });
   } catch (e: any) {
-    return NextResponse.json({ error: e?.message || "error" }, { status: 500 });
+    return NextResponse.json({ error: "join error", detail: String(e) }, { status: 500 });
   }
 }

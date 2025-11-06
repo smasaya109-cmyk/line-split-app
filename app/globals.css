@@ -1,3 +1,4 @@
+/* app/globals.css */
 @import "tailwindcss";
 
 :root {
@@ -24,8 +25,20 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
-/* LINE/iOSでの余白・拡大対策 */
+
+/* ==== ここから iOS/LINE の入力ズーム・余白対策 ==== */
 html, body { height: 100%; margin: 0; }
 body { -webkit-text-size-adjust: 100%; }
-main { min-height: 100svh; }           /* 100vhのズレ対策（iOSはsvh/dvhが安定） */
-:root { color-scheme: light; }         /* 意図しないダーク化の防止 */
+main { min-height: 100svh; }
+:root { color-scheme: light; }
+
+/* iOSの入力フォーカス時ズームを防止（16px以上で回避） */
+input, select, textarea, button {
+  font-size: 16px;
+}
+
+/* タップ挙動のもたつき軽減＆ダブルタップズーム抑制 */
+* {
+  touch-action: manipulation;
+}
+/* ==== ここまで ==== */

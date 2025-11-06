@@ -1,30 +1,24 @@
 // lib/firebaseAdmin.ts
-import { initializeApp, getApps, cert, applicationDefault } from "firebase-admin/app";
-import { getAuth } from "firebase-admin/auth";
-import { getFirestore } from "firebase-admin/firestore";
+import admin from "firebase-admin";
 
-const hasEnv =
-  process.env.FIREBASE_PROJECT_ID &&
-  process.env.FIREBASE_CLIENT_EMAIL &&
-  process.env.FIREBASE_PRIVATE_KEY;
+if (!admin.apps.length) {
+  const projectId = process.env.FIREBASE_PROJECT_ID;
+  const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
+  let privateKey = process.env.FIREBASE_PRIVATE_KEY;
 
-if (!getApps().length) {
-  if (hasEnv) {
-    initializeApp({
-      credential: cert({
-        projectId: process.env.FIREBASE_PROJECT_ID!,
-        clientEmail: process.env.FIREBASE_CLIENT_EMAIL!,
-        privateKey: process.env.FIREBASE_PRIVATE_KEY!.replace(/\\n/g, "\n"),
-      }),
-    });
-  } else {
-    // ローカルで gcloud auth application-default login してるならこれでもOK
-    initializeApp({
-      credential: applicationDefault(),
-    });
+  if (!projectId || !clientEmail || !privateKey) {
+    throw new Error("Missing Firebase Admin credentials");
   }
+  // Vercelの環境変数は \n がエスケープされていることが多い
+  privateKey = privateKey.replace(/\\n/g, "\n");
+
+  admin.initializeApp({
+    credential: admin.credential.cert({ projectId, clientEmail, privateKey }),
+  });
 }
 
-export const adminAuth = getAuth();
-export const adminDb = getFirestore();
-
+export const adminAuth = admin.auth();
+export const adminDb = admin.firestore();
+export const FieldValue = admin.firestore.FieldValue;
+export const adminFs = admin.firestore;
+export default admin;
