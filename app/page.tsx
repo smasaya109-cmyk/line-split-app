@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   collection,
   addDoc,
@@ -12,31 +12,46 @@ import {
   deleteDoc,
   doc,
   getDocs,
+  getDoc,
+  where,
+  setDoc,
+  arrayUnion,
+  arrayRemove,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
-import { inviteByLine } from "@/lib/invite"; // ★ 追加
+import { inviteByLine } from "@/lib/invite";
 
-/** ====== カードのヒーロー画像（HTTPS）をお好みで変更してください ====== */
-const HERO_IMAGE_URL =
-  "https://static.line-scdn.net/line_lp/img/meta/og-image.png";
-/** 公式LINEの友だち追加リンク（Vercel/.env.local に設定推奨） */
-const ADD_FRIEND_URL = process.env.NEXT_PUBLIC_LINE_ADD_FRIEND_URL || "";
-/** ================================================================ */
-
-type Group = { id: string; name: string };
-type Member = { id: string; name: string };
+/** ===================== 型 ===================== */
+type Group = {
+  id: string;
+  name: string;
+  ownerId?: string | null;
+  memberUids?: string[];
+  createdAt?: any;
+};
+type Member = {
+  id: string; // ドキュメントID（= uid の場合もあり）
+  name: string;
+  uid?: string; // ある場合はLINEのuserId
+};
 type Expense = {
   id: string;
   title: string;
   amount: number;
-  currency: string;
-  paidBy: string;
-  participants: string[];
+  currency: "JPY" | "USD";
+  paidBy: string; // member doc id
+  participants: string[]; // member doc ids
   createdAt?: any;
 };
 type SettlementLine = { from: string; to: string; amount: number; currency: string };
 
+/** ================================================= */
+
 export default function Page() {
+  // ログインユーザー（LIFF）
+  const [myUid, setMyUid] = useState<string | null>(null);
+  const [myName, setMyName] = useState<string>("");
+
   // タブ
   const [activeTab, setActiveTab] = useState<"groups" | "members" | "add" | "list" | "settle">(
     "groups"
@@ -46,8 +61,6 @@ export default function Page() {
   const [groups, setGroups] = useState<Group[]>([]);
   const [groupName, setGroupName] = useState("");
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
-  const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
-  const [editingGroupName, setEditingGroupName] = useState("");
 
   // メンバー
   const [members, setMembers] = useState<Member[]>([]);
@@ -62,73 +75,123 @@ export default function Page() {
   const [selectedParticipants, setSelectedParticipants] = useState<string[]>([]);
   const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null);
 
-  // 友だち状態（true=友だち済み / false=未フレンド / null=不明）
-  const [isFriend, setIsFriend] = useState<boolean | null>(null);
-
-  // 初期化（LIFF + ?group= + 友だち状態チェック）
+  /** ================ LIFF 初期化（userId / displayName、?group） ================ */
   useEffect(() => {
     if (typeof window === "undefined") return;
 
+    // ?group=xxx を拾っておく
     const url = new URL(window.location.href);
-    const groupFromQuery = url.searchParams.get("group");
-    if (groupFromQuery) setSelectedGroupId(groupFromQuery);
+    const gid = url.searchParams.get("group");
+    if (gid) setSelectedGroupId(gid);
 
     const start = async () => {
-      const liff = (window as any).liff;
-      if (!liff) return;
-      try {
+      const w = window as any;
+      const ensureLiff = async () => {
+        if (!w.liff) {
+          await new Promise<void>((res, rej) => {
+            const s = document.createElement("script");
+            s.src = "https://static.line-scdn.net/liff/edge/2/sdk.js";
+            s.async = true;
+            s.onload = () => res();
+            s.onerror = () => rej(new Error("LIFF SDK load failed"));
+            document.body.appendChild(s);
+          });
+        }
+        const liff = w.liff;
         await liff.init({ liffId: process.env.NEXT_PUBLIC_LIFF_ID! });
         await liff.ready;
+        return liff;
+      };
 
-        try {
-          const fr = await liff.getFriendship();
-          setIsFriend(!!fr?.friendFlag);
-        } catch {
-          setIsFriend(null);
-        }
-
-        if (liff.isLoggedIn()) {
+      try {
+        const liff = await ensureLiff();
+        if (!liff.isLoggedIn?.()) {
+          // LINE外ブラウザで開いたケースも考慮し、強制ログインはしない
+          // （必要ならここで liff.login() へ）
+        } else {
           const profile = await liff.getProfile();
-          setMemberName(profile.displayName || "");
+          if (profile?.userId) setMyUid(profile.userId);
+          if (profile?.displayName) {
+            setMyName(profile.displayName);
+            setMemberName((prev: string) => prev || profile.displayName);
+          }
         }
       } catch (e) {
         console.warn("LIFF init error", e);
       }
     };
 
-    if ((window as any).liff) {
-      start();
-    } else {
-      const s = document.createElement("script");
-      s.src = "https://static.line-scdn.net/liff/edge/2/sdk.js";
-      s.async = true;
-      s.onload = start;
-      document.body.appendChild(s);
-    }
+    start();
   }, []);
 
-  // グループ一覧
+  /** ================ グループ一覧（自分が作成 or 参加のものだけ） ================ */
   useEffect(() => {
-    const q = query(collection(db, "groups"), orderBy("createdAt", "desc"));
-    const unsub = onSnapshot(q, (snap) => {
-      const list: Group[] = [];
-      snap.forEach((d) => list.push({ id: d.id, name: d.data().name }));
-      setGroups(list);
-      if (!selectedGroupId && list.length > 0) setSelectedGroupId(list[0].id);
-    });
-    return () => unsub();
-  }, [selectedGroupId]);
+    if (!myUid) {
+      setGroups([]);
+      return;
+    }
 
-  // メンバー一覧
+    const col = collection(db, "groups");
+
+    // 自分がownerのグループ
+    const qOwner = query(col, where("ownerId", "==", myUid));
+
+    // 自分がメンバーのグループ（memberUids に含まれている）
+    const qMember = query(col, where("memberUids", "array-contains", myUid));
+
+    // 2つの購読をマージして重複排除
+    const cache = new Map<string, Group>();
+
+    const applySnapshot = (snap: any) => {
+      snap.forEach((d: any) => {
+        const data = d.data();
+        cache.set(d.id, {
+          id: d.id,
+          name: data.name,
+          ownerId: data.ownerId ?? null,
+          memberUids: data.memberUids ?? [],
+          createdAt: data.createdAt,
+        });
+      });
+      // createdAt desc で整列
+      const list = Array.from(cache.values()).sort((a, b) => {
+        const ta = a.createdAt?.toMillis?.() ?? 0;
+        const tb = b.createdAt?.toMillis?.() ?? 0;
+        return tb - ta;
+      });
+      setGroups(list);
+
+      // まだ選択が無ければ先頭を選ぶ
+      if (!selectedGroupId && list.length > 0) {
+        setSelectedGroupId(list[0].id);
+      }
+    };
+
+    const unsub1 = onSnapshot(qOwner, applySnapshot);
+    const unsub2 = onSnapshot(qMember, applySnapshot);
+
+    return () => {
+      unsub1();
+      unsub2();
+    };
+  }, [myUid, selectedGroupId]);
+
+  /** ================ メンバー一覧（選択グループ） ================ */
   useEffect(() => {
-    if (!selectedGroupId) return;
+    if (!selectedGroupId) {
+      setMembers([]);
+      return;
+    }
     const q = query(
       collection(db, "groups", selectedGroupId, "members"),
       orderBy("joinedAt", "asc")
     );
     const unsub = onSnapshot(q, (snap) => {
       const list: Member[] = [];
-      snap.forEach((d) => list.push({ id: d.id, name: d.data().name }));
+      snap.forEach((d) => {
+        const data = d.data() as any;
+        list.push({ id: d.id, name: data.name, uid: data.uid });
+      });
       setMembers(list);
       if (list.length > 0 && !paidBy) setPaidBy(list[0].id);
       if (list.length > 0 && selectedParticipants.length === 0) {
@@ -139,9 +202,12 @@ export default function Page() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedGroupId]);
 
-  // 支払い一覧
+  /** ================ 支払い一覧（選択グループ） ================ */
   useEffect(() => {
-    if (!selectedGroupId) return;
+    if (!selectedGroupId) {
+      setExpenses([]);
+      return;
+    }
     const q = query(
       collection(db, "groups", selectedGroupId, "expenses"),
       orderBy("createdAt", "desc")
@@ -165,24 +231,45 @@ export default function Page() {
     return () => unsub();
   }, [selectedGroupId]);
 
-  // グループ操作
+  /** ================ Group 操作 ================ */
   const handleAddGroup = async () => {
     if (!groupName.trim()) return;
-    await addDoc(collection(db, "groups"), {
+    // 作成者のみ閲覧できるよう ownerId を付与。自分をmemberUidsにも入れる
+    const ref = await addDoc(collection(db, "groups"), {
       name: groupName.trim(),
+      ownerId: myUid ?? null,
+      memberUids: myUid ? [myUid] : [],
       createdAt: serverTimestamp(),
     });
     setGroupName("");
+
+    // オーナーを members に登録（docId = myUid で上書き）
+    if (myUid) {
+      await setDoc(doc(db, "groups", ref.id, "members", myUid), {
+        name: myName || "あなた",
+        uid: myUid,
+        joinedAt: serverTimestamp(),
+      });
+    }
   };
 
-  const handleSaveGroupName = async (groupId: string) => {
-    if (!editingGroupName.trim()) {
-      setEditingGroupId(null);
-      return;
+  /** グループに自分を参加（招待リンクから来た人向け） */
+  const handleJoinSelf = async () => {
+    if (!selectedGroupId || !myUid) return;
+    // すでに入っていれば何もしない
+    const mref = doc(db, "groups", selectedGroupId, "members", myUid);
+    const m = await getDoc(mref);
+    if (!m.exists()) {
+      await setDoc(mref, {
+        name: myName || "あなた",
+        uid: myUid,
+        joinedAt: serverTimestamp(),
+      });
     }
-    await updateDoc(doc(db, "groups", groupId), { name: editingGroupName.trim() });
-    setEditingGroupId(null);
-    setEditingGroupName("");
+    await updateDoc(doc(db, "groups", selectedGroupId), {
+      memberUids: arrayUnion(myUid),
+    });
+    alert("このグループに参加しました！");
   };
 
   const handleDeleteGroup = async (groupId: string) => {
@@ -192,6 +279,7 @@ export default function Page() {
     const expensesSnap = await getDocs(collection(db, "groups", groupId, "expenses"));
     for (const e of expensesSnap.docs) await deleteDoc(e.ref);
     await deleteDoc(doc(db, "groups", groupId));
+
     if (selectedGroupId === groupId) {
       setSelectedGroupId(null);
       setMembers([]);
@@ -199,10 +287,12 @@ export default function Page() {
     }
   };
 
-  // メンバー追加
+  /** ================ Members 操作 ================ */
   const handleAddMember = async () => {
     if (!selectedGroupId) return;
     if (!memberName.trim()) return;
+
+    // 名前だけのメンバー（uidなし）
     await addDoc(collection(db, "groups", selectedGroupId, "members"), {
       name: memberName.trim(),
       joinedAt: serverTimestamp(),
@@ -210,7 +300,24 @@ export default function Page() {
     setMemberName("");
   };
 
-  // 支払い追加/更新
+  /** メンバー削除（uidが付いていれば group.memberUids からも外す） */
+  const handleDeleteMember = async (member: Member) => {
+    if (!selectedGroupId) return;
+    if (!confirm(`メンバー「${member.name}」を削除しますか？`)) return;
+    await deleteDoc(doc(db, "groups", selectedGroupId, "members", member.id));
+
+    // member.uid があれば memberUids からも除外
+    const uidToRemove = member.uid ?? (member.id.startsWith("U") ? member.id : null);
+    if (uidToRemove) {
+      try {
+        await updateDoc(doc(db, "groups", selectedGroupId), {
+          memberUids: arrayRemove(uidToRemove),
+        });
+      } catch {}
+    }
+  };
+
+  /** ================ Expense 操作 ================ */
   const handleAddExpense = async () => {
     if (!selectedGroupId) return;
     if (!title.trim()) return;
@@ -245,7 +352,7 @@ export default function Page() {
     setEditingExpenseId(ex.id);
     setTitle(ex.title);
     setAmount(ex.amount);
-    setCurrency(ex.currency as "JPY" | "USD");
+    setCurrency(ex.currency);
     setPaidBy(ex.paidBy);
     setSelectedParticipants(ex.participants);
     setActiveTab("add");
@@ -257,38 +364,32 @@ export default function Page() {
     await deleteDoc(doc(db, "groups", selectedGroupId, "expenses", ex.id));
   };
 
-  const toggleParticipant = (id: string) => {
-    setSelectedParticipants((prev) =>
-      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
-    );
-  };
-
+  /** ================ UI ヘルパ ================ */
   const getMemberName = (id: string) => members.find((m) => m.id === id)?.name ?? "(不明)";
+
+  const currentGroup: Group | undefined = useMemo(
+    () => groups.find((g) => g.id === selectedGroupId),
+    [groups, selectedGroupId]
+  );
+  const amJoined = useMemo(() => {
+    if (!myUid) return false;
+    // group.memberUids に含まれている or members に自分のuid/docIdがある
+    if (currentGroup?.memberUids?.includes(myUid)) return true;
+    if (members.some((m) => m.uid === myUid || m.id === myUid)) return true;
+    return false;
+  }, [currentGroup, members, myUid]);
 
   // 精算
   const settlementsByCurrency = calcSettlements(members, expenses);
 
-  /** 招待：LINE共有（未対応はURLコピー） */
+  /** ================ 招待 ================ */
   const handleInviteByLine = async () => {
-    if (!selectedGroupId) {
-      alert("先にグループを選択してください");
-      return;
-    }
-    const name = groups.find((g) => g.id === selectedGroupId)?.name ?? "割り勘グループ";
-    await inviteByLine(selectedGroupId, name); // ★ 置き換え済み
+    if (!selectedGroupId) return;
+    const name = currentGroup?.name ?? "割り勘グループ";
+    await inviteByLine(selectedGroupId, name);
   };
 
-  /** 公式LINEの「友だち追加」ボタン押下時 */
-  const handleAddFriendClick = () => {
-    const url = ADD_FRIEND_URL || "https://lin.ee/xxxxx"; // 未設定時フォールバック
-    const liff = (window as any).liff;
-    if (liff?.openWindow) {
-      liff.openWindow({ url, external: true });
-    } else {
-      window.open(url, "_blank");
-    }
-  };
-
+  /** =========================== JSX =========================== */
   return (
     <div className="min-h-screen bg-[#ECEEF0] flex justify-center">
       <div className="relative w-full max-w-md bg-white min-h-screen flex flex-col">
@@ -297,9 +398,7 @@ export default function Page() {
           <div>
             <p className="text-sm font-semibold">割り勘だよ</p>
             <p className="text-[10px] text-gray-400">
-              {selectedGroupId
-                ? groups.find((g) => g.id === selectedGroupId)?.name
-                : "グループを選んでください"}
+              {currentGroup ? currentGroup.name : "グループを選んでください"}
             </p>
           </div>
         </div>
@@ -325,7 +424,7 @@ export default function Page() {
                 </button>
               </div>
 
-              <p className="text-xs text-gray-500">グループ一覧</p>
+              <p className="text-xs text-gray-500">あなたのグループ</p>
               <div className="space-y-2">
                 {groups.map((g) => (
                   <div
@@ -336,64 +435,38 @@ export default function Page() {
                         : "bg-white text-gray-700"
                     }`}
                   >
-                    {editingGroupId === g.id ? (
-                      <>
-                        <input
-                          value={editingGroupName}
-                          onChange={(e) => setEditingGroupName(e.target.value)}
-                          className="flex-1 border rounded px-2 py-1 text-sm"
-                        />
-                        <button
-                          onClick={() => handleSaveGroupName(g.id)}
-                          className="text-xs bg-[#06C755] text-white px-2 py-1 rounded"
-                        >
-                          保存
-                        </button>
-                        <button
-                          onClick={() => {
-                            setEditingGroupId(null);
-                            setEditingGroupName("");
-                          }}
-                          className="text-xs text-gray-400"
-                        >
-                          ✕
-                        </button>
-                      </>
-                    ) : (
-                      <>
-                        <button
-                          className="flex-1 text-left"
-                          onClick={() => {
-                            setSelectedGroupId(g.id);
-                            setActiveTab("members");
-                          }}
-                        >
-                          <div>{g.name}</div>
-                          <div className="text-[10px] text-gray-400">{g.id}</div>
-                        </button>
-                        <div className="flex gap-2">
-                          <button
-                            onClick={() => {
-                              setEditingGroupId(g.id);
-                              setEditingGroupName(g.name);
-                            }}
-                            className="text-xs text-gray-400"
-                          >
-                            ✏
-                          </button>
-                          <button
-                            onClick={() => handleDeleteGroup(g.id)}
-                            className="text-xs text-red-400"
-                          >
-                            削除
-                          </button>
-                        </div>
-                      </>
-                    )}
+                    <button
+                      className="flex-1 text-left"
+                      onClick={() => {
+                        setSelectedGroupId(g.id);
+                        setActiveTab("members");
+                      }}
+                    >
+                      <div className="flex items-center gap-2">
+                        <span>{g.name}</span>
+                        {g.ownerId === myUid && (
+                          <span className="text-[10px] text-white bg-[#06C755] px-2 py-[2px] rounded-full">
+                            オーナー
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-[10px] text-gray-400">{g.id}</div>
+                    </button>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => handleDeleteGroup(g.id)}
+                        className="text-xs text-red-400"
+                        title="グループ削除"
+                      >
+                        削除
+                      </button>
+                    </div>
                   </div>
                 ))}
                 {groups.length === 0 && (
-                  <p className="text-xs text-gray-400">まだグループがありません</p>
+                  <p className="text-xs text-gray-400">
+                    まだグループがありません（※自分が作成 or 参加しているものだけ表示されます）
+                  </p>
                 )}
               </div>
             </div>
@@ -404,22 +477,38 @@ export default function Page() {
             <div className="space-y-4">
               <div className="flex justify-between items-center">
                 <p className="text-xs text-gray-500">
-                  対象グループ：
-                  {groups.find((g) => g.id === selectedGroupId)?.name ?? "未選択"}
+                  対象グループ：{currentGroup?.name ?? "未選択"}
                 </p>
-                <button
-                  onClick={handleInviteByLine}
-                  className="text-[11px] bg-[#06C755]/10 text-[#06C755] px-3 py-1 rounded-lg"
-                >
-                  LINEで招待
-                </button>
+                <div className="flex gap-2">
+                  <button
+                    onClick={handleInviteByLine}
+                    className="text-[11px] bg-[#06C755]/10 text-[#06C755] px-3 py-1 rounded-lg"
+                  >
+                    LINEで招待
+                  </button>
+                </div>
               </div>
+
+              {/* 参加ボタン（自分が未参加のときだけ表示） */}
+              {!amJoined && myUid && (
+                <div className="bg-white border rounded-lg p-3">
+                  <p className="text-xs mb-2 text-gray-700">
+                    このグループに参加するには、あなた（{myName || "あなた"}）をメンバーに追加してください。
+                  </p>
+                  <button
+                    onClick={handleJoinSelf}
+                    className="text-sm bg-[#06C755] text-white px-3 py-2 rounded-lg"
+                  >
+                    自分を参加させる
+                  </button>
+                </div>
+              )}
 
               <div className="flex gap-2">
                 <input
                   value={memberName}
                   onChange={(e) => setMemberName(e.target.value)}
-                  placeholder="ささき / LINEの名前"
+                  placeholder="メンバー名（LINE名でもOK）"
                   className="flex-1 rounded-lg border border-gray-200 px-3 py-2 text-sm bg-white"
                 />
                 <button
@@ -433,8 +522,18 @@ export default function Page() {
               <p className="text-xs text-gray-500">メンバー一覧</p>
               <div className="flex flex-wrap gap-2">
                 {members.map((m) => (
-                  <span key={m.id} className="bg-white border text-xs px-3 py-1 rounded-full">
+                  <span
+                    key={m.id}
+                    className="bg-white border text-xs px-2 py-1 rounded-full flex items-center gap-2"
+                  >
                     {m.name}
+                    <button
+                      onClick={() => handleDeleteMember(m)}
+                      className="text-[11px] text-red-500 hover:underline"
+                      title="このメンバーを削除"
+                    >
+                      ×
+                    </button>
                   </span>
                 ))}
                 {members.length === 0 && (
@@ -500,7 +599,13 @@ export default function Page() {
                       <input
                         type="checkbox"
                         checked={selectedParticipants.includes(m.id)}
-                        onChange={() => toggleParticipant(m.id)}
+                        onChange={() => {
+                          setSelectedParticipants((prev) =>
+                            prev.includes(m.id)
+                              ? prev.filter((x) => x !== m.id)
+                              : [...prev, m.id]
+                          );
+                        }}
                       />
                       {m.name}
                     </label>
@@ -603,22 +708,6 @@ export default function Page() {
                   )}
                 </div>
               ))}
-
-              {/* ▼ ここが追加：未フレンド時だけ小さな友だち追加ボタン */}
-              {/* ▼ 未フレンド or 判定不能でも小さな友だち追加ボタンを表示 */}
-{isFriend !== true && (
-  <div className="pt-2 flex justify-center">
-    <button
-      onClick={handleAddFriendClick}
-      className="text-[11px] px-3 py-1 rounded-lg border border-[#06C755] text-[#06C755] bg-white"
-      title="公式LINEを友だち追加すると招待や共有がスムーズになります"
-    >
-      公式LINEを友だち追加
-    </button>
-  </div>
-)}
-
-              {/* ▲ ここまで */}
             </div>
           )}
         </div>
@@ -636,6 +725,7 @@ export default function Page() {
   );
 }
 
+/** タブ */
 function TabItem({
   label,
   active,
@@ -657,7 +747,7 @@ function TabItem({
   );
 }
 
-// 精算
+/** 精算ロジック（通貨別） */
 function calcSettlements(members: Member[], expenses: Expense[]): Record<string, SettlementLine[]> {
   if (members.length === 0 || expenses.length === 0) return {};
   const balances: Record<string, Record<string, number>> = {};
@@ -691,12 +781,9 @@ function calcSettlements(members: Member[], expenses: Expense[]): Record<string,
       const c = creditors[ci];
       const d = debtors[di];
       const pay = Math.min(c.amt, d.amt);
-
       lines.push({ from: d.id, to: c.id, amount: Math.round(pay), currency: cur });
-
       c.amt -= pay;
       d.amt -= pay;
-
       if (c.amt < 0.01) ci++;
       if (d.amt < 0.01) di++;
     }
