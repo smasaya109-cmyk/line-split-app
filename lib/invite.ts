@@ -6,27 +6,22 @@ export async function inviteByLine(groupId: string, groupName: string) {
 
   const liff = (globalThis as any).liff;
 
-  // LIFFのShare Target Pickerが使えるならそれを優先
   if (liff?.isApiAvailable?.("shareTargetPicker")) {
     try {
       await liff.shareTargetPicker([{ type: "text", text }]);
       return;
-    } catch (_) {
-      // noop → 他の手段にフォールバック
+    } catch {
+      /* fallback */
     }
   }
-
-  // Web Share API
   if (navigator.share) {
     try {
       await navigator.share({ title: "割り勘グループに招待", text, url });
       return;
-    } catch (_) {
-      // noop
+    } catch {
+      /* fallback */
     }
   }
-
-  // 何も使えない場合はクリップボード
   try {
     await navigator.clipboard.writeText(url);
     alert(`招待リンクをコピーしました:\n${url}`);

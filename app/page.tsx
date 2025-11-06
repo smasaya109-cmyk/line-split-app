@@ -15,16 +15,9 @@ import {
   getDocs,
   where,
 } from "firebase/firestore";
-import { signInWithCustomToken } from "firebase/auth";
+import { signInWithCustomToken, onAuthStateChanged } from "firebase/auth";
 import { auth, db } from "@/lib/firebase";
-import { inviteByLine } from "@/lib/invite"; // ★ 追加
-
-/** ====== カードのヒーロー画像（HTTPS）をお好みで変更してください ====== */
-const HERO_IMAGE_URL =
-  "https://static.line-scdn.net/line_lp/img/meta/og-image.png";
-/** 公式LINEの友だち追加リンク（Vercel/.env.local に設定推奨） */
-const ADD_FRIEND_URL = process.env.NEXT_PUBLIC_LINE_ADD_FRIEND_URL || "";
-/** ================================================================ */
+import { inviteByLine } from "@/lib/invite";
 
 type Group = { id: string; name: string };
 type Member = { id: string; name: string; uid?: string };
@@ -39,24 +32,22 @@ type Expense = {
 };
 type SettlementLine = { from: string; to: string; amount: number; currency: string };
 
+const ADD_FRIEND_URL = process.env.NEXT_PUBLIC_LINE_ADD_FRIEND_URL || "";
+
 export default function Page() {
-  // タブ
   const [activeTab, setActiveTab] = useState<"groups" | "members" | "add" | "list" | "settle">(
     "groups"
   );
 
-  // グループ
   const [groups, setGroups] = useState<Group[]>([]);
   const [groupName, setGroupName] = useState("");
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
   const [editingGroupName, setEditingGroupName] = useState("");
 
-  // メンバー
   const [members, setMembers] = useState<Member[]>([]);
   const [memberName, setMemberName] = useState("");
 
-  // 支払い
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [title, setTitle] = useState("");
   const [amount, setAmount] = useState<number>(0);
@@ -65,13 +56,16 @@ export default function Page() {
   const [selectedParticipants, setSelectedParticipants] = useState<string[]>([]);
   const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null);
 
-  // 友だち状態（true=友だち済み / false=未フレンド / null=不明）
   const [isFriend, setIsFriend] = useState<boolean | null>(null);
-
-  // 招待モード（/?group=xxx&invite=1 で開いたとき true）
   const [isInvite, setIsInvite] = useState(false);
 
-  // 初期化（LIFF + ?group= + 友だち状態チェック + A) サインイン）
+  // auth の uid を state 化（サインイン後に確実に effect が走るように）
+  const [uid, setUid] = useState<string | null>(null);
+  useEffect(() => {
+    return onAuthStateChanged(auth, (u) => setUid(u ? u.uid : null));
+  }, []);
+
+  // 初期化（LIFF 強制ログイン → Firebase サインイン）
   useEffect(() => {
     if (typeof window === "undefined") return;
 
@@ -84,11 +78,16 @@ export default function Page() {
     const start = async () => {
       const liff = (window as any).liff;
       if (!liff) return;
+
       try {
         await liff.init({ liffId: process.env.NEXT_PUBLIC_LIFF_ID! });
         await liff.ready;
 
-        // 友だち状態チェック
+        if (!liff.isLoggedIn()) {
+          liff.login({ redirectUri: window.location.href });
+          return;
+        }
+
         try {
           const fr = await liff.getFriendship();
           setIsFriend(!!fr?.friendFlag);
@@ -96,28 +95,30 @@ export default function Page() {
           setIsFriend(null);
         }
 
-        // プロフィール → 画面のデフォルト名
-        if (liff.isLoggedIn()) {
+        try {
           const profile = await liff.getProfile();
           setMemberName(profile.displayName || "");
+        } catch {
+          /* noop */
         }
 
-        // ★ A) LIFF IDトークン → カスタムトークンで Firebase サインイン
         const idToken = await liff.getIDToken?.();
-        if (idToken) {
-          try {
-            const r = await fetch("/api/auth/line", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ idToken }),
-            });
-            const { customToken } = await r.json();
-            if (customToken) {
-              await signInWithCustomToken(auth, customToken);
-            }
-          } catch (e) {
-            console.warn("Custom token sign-in failed", e);
-          }
+        if (!idToken) {
+          alert("LINEログインに失敗しました。LIFF設定（NEXT_PUBLIC_LIFF_ID）を確認してください。");
+          return;
+        }
+        try {
+          const r = await fetch("/api/auth/line", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ idToken }),
+          });
+          const { customToken, error, detail } = await r.json();
+          if (!r.ok || !customToken) throw new Error(error || JSON.stringify(detail));
+          await signInWithCustomToken(auth, customToken);
+        } catch (e) {
+          console.error(e);
+          alert("Firebaseサインインに失敗しました。/api/auth/line と環境変数を確認してください。");
         }
       } catch (e) {
         console.warn("LIFF init error", e);
@@ -135,27 +136,37 @@ export default function Page() {
     }
   }, []);
 
-  // B) グループ一覧（自分に可視なものだけ）
+  // グループ一覧（visibleTo に自分の uid を含むもののみ）。インデックス未作成時のフォールバック付き
   useEffect(() => {
-    // auth の状態が入ってから実行
-    const uid = auth.currentUser?.uid;
     if (!uid) return;
 
-    const qy = query(
-      collection(db, "groups"),
-      where("visibleTo", "array-contains", uid),
-      orderBy("createdAt", "desc")
-    );
+    const base = query(collection(db, "groups"), where("visibleTo", "array-contains", uid));
+    const withOrder = query(base, orderBy("createdAt", "desc"));
 
-    const unsub = onSnapshot(qy, (snap) => {
+    const handleSnap = (snap: any) => {
       const list: Group[] = [];
-      snap.forEach((d) => list.push({ id: d.id, name: (d.data() as any).name }));
+      snap.forEach((d: any) => list.push({ id: d.id, name: (d.data() as any).name }));
       setGroups(list);
       if (!selectedGroupId && list.length > 0) setSelectedGroupId(list[0].id);
-    });
-    return () => unsub();
+    };
+
+    let unsub = onSnapshot(
+      withOrder,
+      handleSnap,
+      (err) => {
+        // 複合インデックス未作成時（failed-precondition）は orderBy を外して購読
+        if (String((err as any)?.code).includes("failed-precondition")) {
+          unsub?.();
+          unsub = onSnapshot(base, handleSnap, (e) => console.error("groups subscribe error:", e));
+        } else {
+          console.error("groups subscribe error:", err);
+        }
+      }
+    );
+
+    return () => unsub?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [auth.currentUser?.uid]);
+  }, [uid]);
 
   // メンバー一覧
   useEffect(() => {
@@ -206,23 +217,29 @@ export default function Page() {
     return () => unsub();
   }, [selectedGroupId]);
 
-  // 自分がメンバーかどうか（id または uid フィールドにマッチ）
-  const myUid = auth.currentUser?.uid;
+  const myUid = uid;
   const isJoined =
-    !!myUid &&
-    members.some((m) => m.id === myUid || m.uid === myUid);
+    !!myUid && members.some((m) => m.id === myUid || m.uid === myUid);
 
-  // C) グループ作成：ownerId と visibleTo
+  // === グループ作成（オーナー & visibleTo=[自分]） ===
   const handleAddGroup = async () => {
-    if (!groupName.trim() || !auth.currentUser) return;
-    const uid = auth.currentUser.uid;
-    await addDoc(collection(db, "groups"), {
-      name: groupName.trim(),
-      ownerId: uid,
-      visibleTo: [uid],
-      createdAt: serverTimestamp(),
-    });
-    setGroupName("");
+    if (!groupName.trim()) return;
+    if (!auth.currentUser) {
+      alert("未サインインです。LINEログイン設定を確認してください。");
+      return;
+    }
+    try {
+      await addDoc(collection(db, "groups"), {
+        name: groupName.trim(),
+        ownerId: auth.currentUser.uid,
+        visibleTo: [auth.currentUser.uid],
+        createdAt: serverTimestamp(),
+      });
+      setGroupName("");
+    } catch (e: any) {
+      console.error(e);
+      alert(`グループ作成に失敗: ${e?.code || ""} ${e?.message || e}`);
+    }
   };
 
   const handleSaveGroupName = async (groupId: string) => {
@@ -249,7 +266,7 @@ export default function Page() {
     }
   };
 
-  // メンバー追加（手動）
+  // メンバー手動追加
   const handleAddMember = async () => {
     if (!selectedGroupId) return;
     if (!memberName.trim()) return;
@@ -315,10 +332,8 @@ export default function Page() {
 
   const getMemberName = (id: string) => members.find((m) => m.id === id)?.name ?? "(不明)";
 
-  // 精算
   const settlementsByCurrency = calcSettlements(members, expenses);
 
-  /** 招待：LINE共有（未対応はURLコピー） */
   const handleInviteByLine = async () => {
     if (!selectedGroupId) {
       alert("先にグループを選択してください");
@@ -328,18 +343,13 @@ export default function Page() {
     await inviteByLine(selectedGroupId, name);
   };
 
-  /** 公式LINEの「友だち追加」ボタン押下時 */
   const handleAddFriendClick = () => {
-    const url = ADD_FRIEND_URL || "https://lin.ee/xxxxx"; // 未設定時フォールバック
+    const url = ADD_FRIEND_URL || "https://lin.ee/xxxxx";
     const liff = (window as any).liff;
-    if (liff?.openWindow) {
-      liff.openWindow({ url, external: true });
-    } else {
-      window.open(url, "_blank");
-    }
+    if (liff?.openWindow) liff.openWindow({ url, external: true });
+    else window.open(url, "_blank");
   };
 
-  /** D) 招待受諾（このグループに参加する） */
   const handleJoinGroup = async () => {
     if (!auth.currentUser || !selectedGroupId) return;
     try {
@@ -483,7 +493,7 @@ export default function Page() {
                 </button>
               </div>
 
-              {/* ★ D) 招待受諾ボタン（invite=1 かつ未参加の場合のみ表示） */}
+              {/* 招待受諾ボタン（invite=1 かつ未参加時のみ） */}
               {isInvite && !!selectedGroupId && !!myUid && !isJoined && (
                 <div className="p-3 rounded-lg bg-white border">
                   <p className="text-xs text-gray-600 mb-2">
@@ -612,7 +622,7 @@ export default function Page() {
                   }}
                   className="w-full bg-gray-200 text-gray-700 py-2 rounded-lg text-sm"
                 >
-                  編集をやめる
+                編集をやめる
                 </button>
               )}
             </div>
@@ -690,7 +700,6 @@ export default function Page() {
                 </div>
               ))}
 
-              {/* ▼ ここが追加：未フレンド時だけ小さな友だち追加ボタン */}
               {isFriend === false && (
                 <div className="pt-2 flex justify-center">
                   <button
@@ -702,7 +711,6 @@ export default function Page() {
                   </button>
                 </div>
               )}
-              {/* ▲ ここまで */}
             </div>
           )}
         </div>
@@ -741,7 +749,6 @@ function TabItem({
   );
 }
 
-// 精算
 function calcSettlements(members: Member[], expenses: Expense[]): Record<string, SettlementLine[]> {
   if (members.length === 0 || expenses.length === 0) return {};
   const balances: Record<string, Record<string, number>> = {};
@@ -752,7 +759,6 @@ function calcSettlements(members: Member[], expenses: Expense[]): Record<string,
     for (const m of members) if (balances[cur][m.id] === undefined) balances[cur][m.id] = 0;
 
     balances[cur][ex.paidBy] += ex.amount;
-
     const share = ex.amount / ex.participants.length;
     for (const pid of ex.participants) balances[cur][pid] -= share;
   }
@@ -769,8 +775,7 @@ function calcSettlements(members: Member[], expenses: Expense[]): Record<string,
     }
 
     const lines: SettlementLine[] = [];
-    let ci = 0,
-      di = 0;
+    let ci = 0, di = 0;
     while (ci < creditors.length && di < debtors.length) {
       const c = creditors[ci];
       const d = debtors[di];
@@ -780,7 +785,6 @@ function calcSettlements(members: Member[], expenses: Expense[]): Record<string,
 
       c.amt -= pay;
       d.amt -= pay;
-
       if (c.amt < 0.01) ci++;
       if (d.amt < 0.01) di++;
     }

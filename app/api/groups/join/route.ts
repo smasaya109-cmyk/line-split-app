@@ -1,4 +1,6 @@
 // app/api/groups/join/route.ts
+export const runtime = "nodejs";
+
 import { NextRequest, NextResponse } from "next/server";
 import { adminDb, adminAuth, FieldValue, adminFs } from "@/lib/firebaseAdmin";
 
@@ -15,14 +17,13 @@ export async function POST(req: NextRequest) {
     if (!groupId) return NextResponse.json({ error: "groupId required" }, { status: 400 });
 
     const groupRef = adminDb.collection("groups").doc(groupId);
+
     await adminDb.runTransaction(async (tx) => {
       const gs = await tx.get(groupRef);
       if (!gs.exists) throw new Error("group not found");
 
-      // visibleTo に uid を追加
       tx.update(groupRef, { visibleTo: FieldValue.arrayUnion(uid) });
 
-      // members/{uid} がなければ作成（id=uidにしておくと参照しやすい）
       const memberRef = groupRef.collection("members").doc(uid);
       const ms = await tx.get(memberRef);
       if (!ms.exists) {

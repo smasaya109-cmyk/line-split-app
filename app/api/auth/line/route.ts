@@ -1,4 +1,6 @@
 // app/api/auth/line/route.ts
+export const runtime = "nodejs";
+
 import { NextRequest, NextResponse } from "next/server";
 import { adminAuth } from "@/lib/firebaseAdmin";
 
@@ -13,7 +15,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "LINE_CHANNEL_ID is not set" }, { status: 500 });
     }
 
-    // LINEのIDトークン検証
     const res = await fetch("https://api.line.me/oauth2/v2.1/verify", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -25,7 +26,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "LINE verify failed", detail: data }, { status: 401 });
     }
 
-    // sub（LINE User ID）をFirebaseのuidに採用。名前・アイコンはカスタムクレームに添付
     const uid = `line:${data.sub}`;
     const customToken = await adminAuth.createCustomToken(uid, {
       name: data.name || "",

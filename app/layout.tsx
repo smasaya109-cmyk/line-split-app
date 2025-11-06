@@ -16,7 +16,7 @@ export const metadata: Metadata = {
   openGraph: {
     title: "みんなで割り勘",
     description: "LINE連携でサクッと割り勘＆自動精算",
-    url: "https://line-split.vercel.app/",
+    url: "https://example.com/",
     siteName: "みんなで割り勘",
     images: [{ url: "/card.png", width: 1200, height: 780 }],
     locale: "ja_JP",
@@ -43,7 +43,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="ja">
       <head>
-        {/* iOSの電話番号自動リンク無効化（ズーム抑制の一助） */}
         <meta name="format-detection" content="telephone=no" />
       </head>
       <body>{children}</body>

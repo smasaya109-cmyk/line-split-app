@@ -9,7 +9,7 @@ if (!admin.apps.length) {
   if (!projectId || !clientEmail || !privateKey) {
     throw new Error("Missing Firebase Admin credentials");
   }
-  // Vercelの環境変数は \n がエスケープされていることが多い
+  // Vercelの環境変数は \n がエスケープされがち
   privateKey = privateKey.replace(/\\n/g, "\n");
 
   admin.initializeApp({
