@@ -24,9 +24,9 @@ type Member = { id: string; name: string; uid?: string };
 type Expense = {
   id: string;
   title: string;
-  amount: number;
-  currency: string;
-  paidBy: string;
+  amount: number;     // 画面上の単位（JPY=円, USD=ドル）
+  currency: string;   // "JPY" | "USD" など
+  paidBy: string;     // members/{id}
   participants: string[];
   createdAt?: any;
 };
@@ -35,9 +35,8 @@ type SettlementLine = { from: string; to: string; amount: number; currency: stri
 const ADD_FRIEND_URL = process.env.NEXT_PUBLIC_LINE_ADD_FRIEND_URL || "";
 
 export default function Page() {
-  const [activeTab, setActiveTab] = useState<"groups" | "members" | "add" | "list" | "settle">(
-    "groups"
-  );
+  const [activeTab, setActiveTab] =
+    useState<"groups" | "members" | "add" | "list" | "settle">("groups");
 
   const [groups, setGroups] = useState<Group[]>([]);
   const [groupName, setGroupName] = useState("");
@@ -59,11 +58,9 @@ export default function Page() {
   const [isFriend, setIsFriend] = useState<boolean | null>(null);
   const [isInvite, setIsInvite] = useState(false);
 
-  // auth の uid を state 化（サインイン後に確実に effect が走るように）
+  // auth の uid を state 化
   const [uid, setUid] = useState<string | null>(null);
-  useEffect(() => {
-    return onAuthStateChanged(auth, (u) => setUid(u ? u.uid : null));
-  }, []);
+  useEffect(() => onAuthStateChanged(auth, (u) => setUid(u ? u.uid : null)), []);
 
   // 初期化（LIFF 強制ログイン → Firebase サインイン）
   useEffect(() => {
@@ -91,16 +88,12 @@ export default function Page() {
         try {
           const fr = await liff.getFriendship();
           setIsFriend(!!fr?.friendFlag);
-        } catch {
-          setIsFriend(null);
-        }
+        } catch { setIsFriend(null); }
 
         try {
           const profile = await liff.getProfile();
           setMemberName(profile.displayName || "");
-        } catch {
-          /* noop */
-        }
+        } catch {}
 
         const idToken = await liff.getIDToken?.();
         if (!idToken) {
@@ -136,7 +129,7 @@ export default function Page() {
     }
   }, []);
 
-  // グループ一覧（visibleTo に自分の uid を含むもののみ）。インデックス未作成時のフォールバック付き
+  // グループ一覧（visibleTo に自分の uid を含むもののみ）。インデックス未作成時フォールバック
   useEffect(() => {
     if (!uid) return;
 
@@ -154,7 +147,6 @@ export default function Page() {
       withOrder,
       handleSnap,
       (err) => {
-        // 複合インデックス未作成時（failed-precondition）は orderBy を外して購読
         if (String((err as any)?.code).includes("failed-precondition")) {
           unsub?.();
           unsub = onSnapshot(base, handleSnap, (e) => console.error("groups subscribe error:", e));
@@ -221,7 +213,7 @@ export default function Page() {
   const isJoined =
     !!myUid && members.some((m) => m.id === myUid || m.uid === myUid);
 
-  // === グループ作成（オーナー & visibleTo=[自分]） ===
+  // === グループ作成 ===
   const handleAddGroup = async () => {
     if (!groupName.trim()) return;
     if (!auth.currentUser) {
@@ -332,15 +324,34 @@ export default function Page() {
 
   const getMemberName = (id: string) => members.find((m) => m.id === id)?.name ?? "(不明)";
 
-  const settlementsByCurrency = calcSettlements(members, expenses);
+  // ====== ★ 精算（整数の最小通貨単位で厳密計算） ======
+  const settlementsByCurrency = calcSettlementsStrict(members, expenses);
 
-  const handleInviteByLine = async () => {
-    if (!selectedGroupId) {
-      alert("先にグループを選択してください");
-      return;
+  // 共有（LINE / WebShare / クリップボード）
+  const shareSettlement = async () => {
+    const linesText: string[] = [];
+    for (const [cur, lines] of Object.entries(settlementsByCurrency)) {
+      if (!lines || lines.length === 0) continue;
+      linesText.push(`【通貨: ${cur}】`);
+      for (const l of lines) {
+        linesText.push(
+          `${getMemberName(l.from)} → ${getMemberName(l.to)} : ${formatCurrency(cur, l.amount)}`
+        );
+      }
     }
-    const name = groups.find((g) => g.id === selectedGroupId)?.name ?? "割り勘グループ";
-    await inviteByLine(selectedGroupId, name);
+    const text = linesText.length
+      ? `精算結果\n${linesText.join("\n")}`
+      : "精算は不要です";
+
+    const liff = (globalThis as any).liff;
+    if (liff?.isApiAvailable?.("shareTargetPicker")) {
+      try { await liff.shareTargetPicker([{ type: "text", text }]); return; } catch {}
+    }
+    if (navigator.share) {
+      try { await navigator.share({ title: "精算結果", text }); return; } catch {}
+    }
+    try { await navigator.clipboard.writeText(text); alert("精算内容をコピーしました"); }
+    catch { alert(text); }
   };
 
   const handleAddFriendClick = () => {
@@ -585,7 +596,7 @@ export default function Page() {
                 </select>
               </div>
 
-              <div className="space-y-1 bg-white rounded-lg p-3">
+              <div className="space-y-1 bg白 rounded-lg p-3">
                 <p className="text-xs text-gray-500 mb-1">割るメンバー</p>
                 <div className="flex flex-wrap gap-2">
                   {members.map((m) => (
@@ -622,7 +633,7 @@ export default function Page() {
                   }}
                   className="w-full bg-gray-200 text-gray-700 py-2 rounded-lg text-sm"
                 >
-                編集をやめる
+                  編集をやめる
                 </button>
               )}
             </div>
@@ -642,7 +653,7 @@ export default function Page() {
                       <div className="flex justify-between">
                         <span className="text-sm font-medium">{ex.title}</span>
                         <span className="text-sm">
-                          {ex.amount.toLocaleString()} {ex.currency}
+                          {formatCurrency(ex.currency, ex.amount)}
                         </span>
                       </div>
                       <p className="text-[11px] text-gray-400">支払: {getMemberName(ex.paidBy)}</p>
@@ -677,13 +688,15 @@ export default function Page() {
           {activeTab === "settle" && (
             <div className="space-y-4">
               <p className="text-xs text-gray-500">精算（誰が誰にいくら払うか）</p>
+
               {Object.keys(settlementsByCurrency).length === 0 && (
                 <p className="text-xs text-gray-400">支払いデータが少ないので計算できません</p>
               )}
+
               {Object.entries(settlementsByCurrency).map(([cur, lines]) => (
                 <div key={cur} className="bg-white rounded-lg p-3 space-y-2">
                   <p className="text-xs font-semibold text-gray-700">通貨: {cur}</p>
-                  {lines.length === 0 ? (
+                  {(!lines || lines.length === 0) ? (
                     <p className="text-xs text-gray-400">精算は不要です</p>
                   ) : (
                     lines.map((line, i) => (
@@ -692,7 +705,7 @@ export default function Page() {
                           {getMemberName(line.from)} → {getMemberName(line.to)}
                         </span>
                         <span className="font-medium">
-                          {line.amount.toLocaleString()} {line.currency}
+                          {formatCurrency(cur, line.amount)}
                         </span>
                       </div>
                     ))
@@ -700,17 +713,24 @@ export default function Page() {
                 </div>
               ))}
 
-              {isFriend === false && (
-                <div className="pt-2 flex justify-center">
+              {/* アクション：共有 & 友だち追加 */}
+              <div className="flex items-center justify-between gap-2">
+                <button
+                  onClick={shareSettlement}
+                  className="text-[12px] px-3 py-2 rounded-lg bg-[#06C755] text-white"
+                >
+                  精算内容を共有
+                </button>
+                {isFriend === false && (
                   <button
                     onClick={handleAddFriendClick}
-                    className="text-[11px] px-3 py-1 rounded-lg border border-[#06C755] text-[#06C755] bg-white"
+                    className="text-[12px] px-3 py-2 rounded-lg border border-[#06C755] text-[#06C755] bg-white"
                     title="公式LINEを友だち追加すると招待や共有がスムーズになります"
                   >
                     公式LINEを友だち追加
                   </button>
-                </div>
-              )}
+                )}
+              </div>
             </div>
           )}
         </div>
@@ -749,44 +769,85 @@ function TabItem({
   );
 }
 
-function calcSettlements(members: Member[], expenses: Expense[]): Record<string, SettlementLine[]> {
+/** 表示用フォーマッタ（JPYは小数なし、USD等は小数2桁） */
+function formatCurrency(cur: string, amount: number) {
+  const digits = cur === "JPY" ? 0 : 2;
+  return `${amount.toLocaleString(undefined, {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  })} ${cur}`;
+}
+
+/** ★ 精算の厳密計算（整数の最小通貨単位で計算） */
+function calcSettlementsStrict(
+  members: Member[],
+  expenses: Expense[]
+): Record<string, SettlementLine[]> {
   if (members.length === 0 || expenses.length === 0) return {};
-  const balances: Record<string, Record<string, number>> = {};
+
+  const balances: Record<string, Record<string, number>> = {}; // cur -> memberId -> balance in minor unit
+  const prec = (cur: string) => (cur === "JPY" ? 0 : 2);
+  const factor = (cur: string) => Math.pow(10, prec(cur));
 
   for (const ex of expenses) {
     const cur = ex.currency;
+    const f = factor(cur);
     if (!balances[cur]) balances[cur] = {};
     for (const m of members) if (balances[cur][m.id] === undefined) balances[cur][m.id] = 0;
 
-    balances[cur][ex.paidBy] += ex.amount;
-    const share = ex.amount / ex.participants.length;
-    for (const pid of ex.participants) balances[cur][pid] -= share;
+    const amtMinor = Math.round(Number(ex.amount) * f);
+
+    // 支払った人は＋
+    balances[cur][ex.paidBy] += amtMinor;
+
+    // 参加者に均等割（余りは先頭から1ずつ配る）
+    const n = ex.participants.length;
+    if (n > 0) {
+      const share = Math.floor(amtMinor / n);
+      let rest = amtMinor - share * n;
+      for (const pid of ex.participants) {
+        const plus = rest > 0 ? 1 : 0;
+        balances[cur][pid] -= (share + plus);
+        if (rest > 0) rest--;
+      }
+    }
   }
 
   const result: Record<string, SettlementLine[]> = {};
   for (const [cur, bal] of Object.entries(balances)) {
+    const f = factor(cur);
     const creditors: { id: string; amt: number }[] = [];
     const debtors: { id: string; amt: number }[] = [];
 
-    for (const [mid, vRaw] of Object.entries(bal)) {
-      const v = Math.round(vRaw * 100) / 100;
-      if (v > 0.01) creditors.push({ id: mid, amt: v });
-      else if (v < -0.01) debtors.push({ id: mid, amt: -v });
+    for (const [mid, v] of Object.entries(bal)) {
+      if (v > 0) creditors.push({ id: mid, amt: v });
+      else if (v < 0) debtors.push({ id: mid, amt: -v });
     }
+
+    // 値がない場合は空配列
+    if (creditors.length === 0 || debtors.length === 0) {
+      result[cur] = [];
+      continue;
+    }
+
+    // 大きい順にすると回数が減りやすい
+    creditors.sort((a, b) => b.amt - a.amt);
+    debtors.sort((a, b) => b.amt - a.amt);
 
     const lines: SettlementLine[] = [];
     let ci = 0, di = 0;
     while (ci < creditors.length && di < debtors.length) {
       const c = creditors[ci];
       const d = debtors[di];
-      const pay = Math.min(c.amt, d.amt);
+      const payMinor = Math.min(c.amt, d.amt); // 最小単位整数で厳密
+      const pay = payMinor / f;
 
-      lines.push({ from: d.id, to: c.id, amount: Math.round(pay), currency: cur });
+      lines.push({ from: d.id, to: c.id, amount: pay, currency: cur });
 
-      c.amt -= pay;
-      d.amt -= pay;
-      if (c.amt < 0.01) ci++;
-      if (d.amt < 0.01) di++;
+      c.amt -= payMinor;
+      d.amt -= payMinor;
+      if (c.amt === 0) ci++;
+      if (d.amt === 0) di++;
     }
     result[cur] = lines;
   }
