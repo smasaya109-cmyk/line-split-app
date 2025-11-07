@@ -15,7 +15,8 @@ export async function inviteByLine(
   const url = `${origin}/?group=${encodeURIComponent(groupId)}&invite=1`;
 
   // Flex Message（カード）
-  const altText = `「${groupName}」割り勘グループに参加しよう`;
+  const title = groupName || "割り勘グループ";
+  const altText = `「${title}」割り勘グループに参加しよう`;
   const flex: any = {
     type: "flex",
     altText,
@@ -42,7 +43,7 @@ export async function inviteByLine(
           },
           {
             type: "text",
-            text: groupName || "割り勘グループ",
+            text: title,
             weight: "bold",
             size: "lg",
             wrap: true,
@@ -55,7 +56,7 @@ export async function inviteByLine(
                   spacing: "sm",
                   contents: [
                     { type: "text", text: "メンバー", size: "sm", color: "#8c8c8c", flex: 2 },
-                    { type: "text", text: `${memberCount} 人`, size: "sm", color: "#111", flex: 5 },
+                    { type: "text", text: `${memberCount} 人`, size: "sm", color: "#111111", flex: 5 },
                   ],
                 },
               ]
@@ -95,7 +96,7 @@ export async function inviteByLine(
       await liff.shareTargetPicker([flex]);
       return;
     } catch {
-      /* ユーザーキャンセル等 → フォールバック */
+      // ユーザーキャンセルなど → フォールバックへ
     }
   }
 
@@ -105,7 +106,9 @@ export async function inviteByLine(
     try {
       await navigator.share({ title: "割り勘に参加", text, url });
       return;
-    } catch {}
+    } catch {
+      // キャンセル時などはフォールバック
+    }
   }
 
   // 最終フォールバック：URLをコピー
@@ -113,4 +116,6 @@ export async function inviteByLine(
     await navigator.clipboard.writeText(url);
     alert(`招待リンクをコピーしました:\n${url}`);
   } catch {
-    alert(`このURLを共有してください:\n${url
+    alert(`このURLを共有してください:\n${url}`);
+  }
+}
