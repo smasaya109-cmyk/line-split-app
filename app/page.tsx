@@ -24,7 +24,7 @@ type Member = { id: string; name: string; uid?: string };
 type Expense = {
   id: string;
   title: string;
-  amount: number;     // 画面上の単位（JPY=円, USD=ドル）
+  amount: number;     // JPY=円, USD=ドルなどの表記単位
   currency: string;   // "JPY" | "USD" など
   paidBy: string;     // members/{id}
   participants: string[];
@@ -210,8 +210,7 @@ export default function Page() {
   }, [selectedGroupId]);
 
   const myUid = uid;
-  const isJoined =
-    !!myUid && members.some((m) => m.id === myUid || m.uid === myUid);
+  const isJoined = !!myUid && members.some((m) => m.id === myUid || m.uid === myUid);
 
   // === グループ作成 ===
   const handleAddGroup = async () => {
@@ -324,8 +323,18 @@ export default function Page() {
 
   const getMemberName = (id: string) => members.find((m) => m.id === id)?.name ?? "(不明)";
 
-  // ====== ★ 精算（整数の最小通貨単位で厳密計算） ======
+  // ====== 精算（整数の最小通貨単位で厳密計算） ======
   const settlementsByCurrency = calcSettlementsStrict(members, expenses);
+
+  // 招待：LINE共有（カードで送る）  ← ★今回追加（これが無くてビルド失敗していました）
+  const handleInviteByLine = async () => {
+    if (!selectedGroupId) {
+      alert("先にグループを選択してください");
+      return;
+    }
+    const name = groups.find((g) => g.id === selectedGroupId)?.name ?? "割り勘グループ";
+    await inviteByLine(selectedGroupId, name, members.length);
+  };
 
   // 共有（LINE / WebShare / クリップボード）
   const shareSettlement = async () => {
@@ -523,7 +532,7 @@ export default function Page() {
                 <input
                   value={memberName}
                   onChange={(e) => setMemberName(e.target.value)}
-                  placeholder="ささき / LINEの名前"
+                  placeholder="タロウ / LINEの名前"
                   className="flex-1 rounded-lg border border-gray-200 px-3 py-2 text-sm bg-white"
                 />
                 <button
@@ -596,7 +605,7 @@ export default function Page() {
                 </select>
               </div>
 
-              <div className="space-y-1 bg白 rounded-lg p-3">
+              <div className="space-y-1 bg-white rounded-lg p-3">
                 <p className="text-xs text-gray-500 mb-1">割るメンバー</p>
                 <div className="flex flex-wrap gap-2">
                   {members.map((m) => (
@@ -778,7 +787,7 @@ function formatCurrency(cur: string, amount: number) {
   })} ${cur}`;
 }
 
-/** ★ 精算の厳密計算（整数の最小通貨単位で計算） */
+/** 精算の厳密計算（整数の最小通貨単位で計算） */
 function calcSettlementsStrict(
   members: Member[],
   expenses: Expense[]
@@ -824,7 +833,6 @@ function calcSettlementsStrict(
       else if (v < 0) debtors.push({ id: mid, amt: -v });
     }
 
-    // 値がない場合は空配列
     if (creditors.length === 0 || debtors.length === 0) {
       result[cur] = [];
       continue;
